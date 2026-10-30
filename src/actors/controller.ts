@@ -252,7 +252,7 @@ export class ActorController extends EventEmitter {
       );
   }
   enqueue(id: string, text: string, from = "operator", cause: string | null = null): Submission {
-    if (!this.bootstrap.threadId || (this.nativeOpening && !this.nativeOpened))
+    if (!this.bootstrap.threadId || (this.hubOpening && !this.nativeOpened))
       throw new Fault(
         "NATIVE_BINDING_PENDING",
         "The Actor's native session is still being prepared.",
@@ -333,7 +333,7 @@ export class ActorController extends EventEmitter {
     if (
       this.pumping ||
       this.stopped ||
-      (this.nativeOpening && !this.nativeOpened) ||
+      (this.hubOpening && !this.nativeOpened) ||
       !this.adapter ||
       this.turnId ||
       this.bootstrap.submissions.some((s) => ["sending", "unknown", "running"].includes(s.state))

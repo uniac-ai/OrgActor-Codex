@@ -16,6 +16,7 @@ export class CodexProvider {
     private store: RuntimeStore,
     private adapter: () => Promise<CodexAdapter>,
     private launch: (id: string) => void,
+    private stop: (id: string) => Promise<void>,
   ) {}
   snapshot() {
     return {
@@ -232,7 +233,9 @@ export class CodexProvider {
     } catch (e) {
       const unknown = sent && (!(e instanceof Fault) || e.code === "NATIVE_UNKNOWN");
       this.store.data.journal[key].state = unknown ? "unknown" : "failed";
+      bootstrap.enabled = false;
       this.store.save();
+      await this.stop(params.actorId);
       throw new Fault(
         unknown ? "PROVISIONING_UNKNOWN" : "PROVISIONING_FAILED",
         unknown

@@ -12,6 +12,8 @@ Hub owns organizational identity, state, management relationships and authority.
 
 Initial execution configuration is a strict object: optional `model` (an available backend model), optional `approvalAuthority` (`desktop` by default, or `hub`). The configured workspace root is the execution cwd. No arbitrary model instructions, credentials or native configuration overrides cross this factory boundary.
 
+Failed or uncertain native creation disables the private bootstrap and its MCP capability, closes the prepared Actor peer and cancels its reconnect. The accepted journal and private bootstrap remain for reconciliation; an identical factory retry returns that retained outcome without another native creation.
+
 ## Actor advertisement
 
 An Actor advertises the following local interfaces with JSON object input/output schemas. Hub discovers them using reverse MCP `initialize` and `tools/list`; it supplies caller aliases in its semantic Tool catalog. Local names are not parsed from aliases.

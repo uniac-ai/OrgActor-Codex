@@ -38,8 +38,8 @@ async function until(description: string, read: () => boolean) {
   assert.fail(description);
 }
 
-for (const mode of ["fresh", "unknown", "offline"])
-  test(`production provisioning ${mode === "unknown" ? "refuses initial reuse with an uncertain accepted input" : mode === "offline" ? "completes native creation while Actor admission is held" : "prepares the Hub bridge before native creation and keeps its owners through first use"}`, {
+for (const mode of ["fresh", "unknown", "offline", "rejected", "lost"])
+  test(`production provisioning ${mode === "unknown" ? "refuses initial reuse with an uncertain accepted input" : mode === "offline" ? "completes native creation while Actor admission is held" : mode === "rejected" || mode === "lost" ? `retires its prepared peer and capability after ${mode} native creation` : "prepares the Hub bridge before native creation and keeps its owners through first use"}`, {
     timeout: 15_000,
   }, async (t) => {
     const root = mkdtempSync(join(tmpdir(), "orgactor-provision-"));
@@ -200,6 +200,18 @@ for (const mode of ["fresh", "unknown", "offline"])
               assert.match(state.earlyReply.result.content[0].text, /NATIVE_BINDING_PENDING/);
               assert.equal(preparedActor.bootstrap.submissions.length, mode === "unknown" ? 1 : 0);
               state.mcpReady = true;
+              if (mode === "rejected" || mode === "lost") {
+                if (mode === "lost") {
+                  actorSocket.close(1001);
+                  await until(
+                    "Prepared peer is disconnected with a retry pending",
+                    () => !runtime.actors.actors.has("fresh-actor"),
+                  );
+                }
+                if (mode === "rejected") error(-32602, "Creation refused SECRET_NATIVE_PAYLOAD");
+                else socket.terminate();
+                return;
+              }
               acknowledgeStart();
             })
             .catch((e) => {
@@ -296,6 +308,48 @@ for (const mode of ["fresh", "unknown", "offline"])
       }),
     );
     await until("Provider creation reply", () => !!state.providerReply);
+    if (mode === "rejected" || mode === "lost") {
+      const outcome = mode === "rejected" ? "failed" : "unknown";
+      const code = mode === "rejected" ? "PROVISIONING_FAILED" : "PROVISIONING_UNKNOWN";
+      const bootstrap = runtime.store.data.actors["fresh-actor"];
+      assert.equal(state.providerReply.error.data.code, code);
+      assert.equal(Object.values(runtime.store.data.journal)[0].state, outcome);
+      assert.equal(bootstrap.enabled, false);
+      assert.equal(bootstrap.threadId, "");
+      assert.equal(bootstrap.submissions.length, 0);
+      assert.equal(runtime.actors.actors.has("fresh-actor"), false);
+      await until("Failed creation peer is closed", () => state.actorClosed);
+      const bridge = await fetch(`${runtime.url}/mcp`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${bootstrap.bridgeToken}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: {} }),
+      });
+      assert.equal(bridge.status, 401);
+      assert.equal(JSON.stringify(state.providerReply).includes("SECRET_NATIVE_PAYLOAD"), false);
+      state.providerReply = undefined;
+      providerSocket.send(
+        JSON.stringify({
+          jsonrpc: "2.0",
+          id: "create",
+          method: "provider.createActor",
+          params: { actorId: "fresh-actor", credential: "ACTOR_SECRET_SENTINEL", config: {} },
+        }),
+      );
+      await until(
+        "Identical factory retry preserves the accepted outcome",
+        () => !!state.providerReply,
+      );
+      assert.equal(state.providerReply.error.data.code, code);
+      await setTimeout(1700);
+      assert.equal(state.actorAdmissions, 1);
+      assert.equal(runtime.actors.actors.has("fresh-actor"), false);
+      assert.equal(state.calls.filter((m) => m === "thread/start").length, 1);
+      assert.equal(state.calls.includes("turn/start"), false);
+      return;
+    }
     assert.deepEqual(state.providerReply.result, { actorId: "fresh-actor" });
     if (mode !== "unknown") {
       assert.ok(runtime.actors.get("fresh-actor") === preparedActor);
@@ -310,6 +364,15 @@ for (const mode of ["fresh", "unknown", "offline"])
       assert.equal(state.calls.includes("thread/resume"), false);
       assert.equal(state.calls.includes("turn/start"), false);
       assert.equal(preparedActor.bootstrap.submissions.length, 0);
+      const input = await fetch(`${runtime.url}/api/actors/fresh-actor/inputs`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ inputId: "held-hub", text: "Too early" }),
+      });
+      assert.equal(input.status, 503);
+      assert.equal(((await input.json()) as any).error.code, "NATIVE_BINDING_PENDING");
+      assert.equal(preparedActor.bootstrap.submissions.length, 0);
+      assert.equal(state.calls.includes("thread/resume"), false);
       return;
     }
     assert.equal(state.mcpReady, true);

@@ -41,6 +41,7 @@ export async function startServer(options: {
     store,
     () => setup.executionAdapter(),
     (id) => actors.launch(id),
+    (id) => actors.setEnabled(id, false),
   );
   const setup: SetupService = new SetupService(store, backend, provider);
   const bridge = new SessionMcpBridge(store, actors);

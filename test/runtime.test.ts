@@ -50,6 +50,7 @@ test("native creation completes with Actor admission completely held; same input
         },
       }) as any,
     () => handoffs++,
+    async () => {},
   );
   const input = { actorId: "actor", credential: "ACTOR_SENTINEL", config: {} };
   const first = provider.create(input);
@@ -81,13 +82,23 @@ test("ambiguous native creation survives restart without replay", async (t) => {
       },
     }) as any;
   let preparations = 0;
-  const provider = new CodexProvider(store, adapter, () => {
-    preparations++;
-    assert.equal(store.data.actors.actor.threadId, "");
-  });
+  const provider = new CodexProvider(
+    store,
+    adapter,
+    () => {
+      preparations++;
+      assert.equal(store.data.actors.actor.threadId, "");
+    },
+    async () => {},
+  );
   const input = { actorId: "actor", credential: "ACTOR_SENTINEL", config: {} };
   await assert.rejects(provider.create(input), (e: any) => e.code === "PROVISIONING_UNKNOWN");
-  const restarted = new CodexProvider(new RuntimeStore(store.root), adapter, () => {});
+  const restarted = new CodexProvider(
+    new RuntimeStore(store.root),
+    adapter,
+    () => {},
+    async () => {},
+  );
   await assert.rejects(restarted.create(input), (e: any) => e.code === "PROVISIONING_UNKNOWN");
   assert.equal(starts, 1);
   assert.equal(preparations, 1);
@@ -271,6 +282,7 @@ test("checking an active Provider uses the actual admitted socket; replacement s
     store,
     async () => ({}) as any,
     () => {},
+    async () => {},
   );
   t.after(() => first.close());
   await first.start();
@@ -286,6 +298,7 @@ test("checking an active Provider uses the actual admitted socket; replacement s
     secondStore,
     async () => ({}) as any,
     () => {},
+    async () => {},
   );
   t.after(() => second.close());
   assert.ok(first.connection);

@@ -116,6 +116,7 @@ try {
     module.store,
     () => module.backend.get(),
     () => {},
+    async () => {},
   );
   const offlineId = `offline-${randomUUID()}`;
   await offline.create({ actorId: offlineId, credential: token(), config: {} });
