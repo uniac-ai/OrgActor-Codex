@@ -63,7 +63,7 @@ test("native creation completes with Actor admission completely held; same input
   held.resolve("native-thread");
   assert.deepEqual(await first, { actorId: "actor" });
   await duplicate;
-  assert.equal(handoffs, 1);
+  assert.equal(handoffs, 2);
   assert.equal(store.data.actors.actor.credential, "ACTOR_SENTINEL");
   assert.equal(statSync(store.file).mode & 0o777, 0o600);
   assert.equal(statSync(store.root).mode & 0o777, 0o700);
@@ -80,14 +80,17 @@ test("ambiguous native creation survives restart without replay", async (t) => {
         throw new Fault("NATIVE_UNKNOWN", "Response lost");
       },
     }) as any;
-  const provider = new CodexProvider(store, adapter, () =>
-    assert.fail("No handoff without a native identity"),
-  );
+  let preparations = 0;
+  const provider = new CodexProvider(store, adapter, () => {
+    preparations++;
+    assert.equal(store.data.actors.actor.threadId, "");
+  });
   const input = { actorId: "actor", credential: "ACTOR_SENTINEL", config: {} };
   await assert.rejects(provider.create(input), (e: any) => e.code === "PROVISIONING_UNKNOWN");
   const restarted = new CodexProvider(new RuntimeStore(store.root), adapter, () => {});
   await assert.rejects(restarted.create(input), (e: any) => e.code === "PROVISIONING_UNKNOWN");
   assert.equal(starts, 1);
+  assert.equal(preparations, 1);
 });
 test("ManagementApi opens directly, validates mutations and keeps private material write-only", async (t) => {
   const store = fixture(t);

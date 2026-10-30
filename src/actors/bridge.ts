@@ -46,7 +46,7 @@ export class SessionMcpBridge {
       const deadline = Date.now() + 20_000;
       while (
         !res.destroyed &&
-        !this.supervisor.actors.get(bootstrap.actorId)?.hub?.connection.connected &&
+        !this.supervisor.actors.get(bootstrap.actorId)?.hubReady &&
         Date.now() < deadline
       )
         await new Promise((resolve) => setTimeout(resolve, 100));
@@ -56,7 +56,7 @@ export class SessionMcpBridge {
         method: "tools/list",
         hubConnected: current?.hub?.connection.connected ?? false,
       });
-      if (!current?.hub?.connection.connected)
+      if (!current?.hubReady || !current.hub?.connection.connected)
         throw new McpError(ErrorCode.InternalError, "The Actor Hub connection is unavailable.");
       return { tools: (await current.hub.refreshTools()).map(projectTool) };
     });

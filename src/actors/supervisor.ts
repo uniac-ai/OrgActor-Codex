@@ -16,38 +16,53 @@ export class ActorSupervisor {
       if (actor.enabled && actor.threadId && !actor.suspended) this.launch(actor.actorId);
   }
   launch(id: string): void {
-    if (this.closed || this.actors.has(id)) return;
+    if (this.closed) return;
     const bootstrap = this.store.data.actors[id];
-    if (!bootstrap?.enabled || !bootstrap.threadId || bootstrap.suspended) return;
-    const actor = new ActorController(bootstrap, this.store, this.adapter);
-    this.actors.set(id, actor);
-    const reconnect = () => {
-      if (this.actors.get(id) !== actor) return;
-      const code = actor.hub?.connection.closeCode;
-      if (code === 4000 || code === 4001) {
-        bootstrap.suspended = code;
-        this.store.save();
-      }
-      this.actors.delete(id);
-      void actor.close();
-      if (!this.closed && bootstrap.enabled && !bootstrap.suspended) {
-        const timer = setTimeout(() => {
-          this.retry.delete(id);
-          this.launch(id);
-        }, 1500);
-        timer.unref();
-        this.retry.set(id, timer);
-      }
-    };
-    actor.on("disconnected", reconnect);
-    void actor.open().catch((error) => {
-      if (error instanceof Fault && error.code === "HUB_REJECTED") {
+    if (!bootstrap?.enabled || bootstrap.suspended) return;
+    let actor = this.actors.get(id);
+    if (!actor) {
+      actor = new ActorController(bootstrap, this.store, this.adapter);
+      this.actors.set(id, actor);
+      const created = actor;
+      actor.on("disconnected", () => this.reconnect(created));
+    }
+    const current = actor;
+    void current.open().catch((error) => {
+      if (this.closed || !bootstrap.enabled) return;
+      bootstrap.startupFailure ??= {
+        phase: current.startupPhase,
+        code: error instanceof Fault ? error.code : "STARTUP_FAILED",
+        ...(error instanceof Fault && error.native ? { native: error.native } : {}),
+        ...(current.hub?.connection.closeCode === undefined
+          ? {}
+          : { closeCode: current.hub.connection.closeCode }),
+      };
+      if (error instanceof Fault && error.code === "HUB_REJECTED")
         bootstrap.suspended = "admission-rejected";
-        this.store.save();
-      }
-      actor.lastError = "The Actor could not connect. Check backend and Hub readiness.";
-      reconnect();
+      this.store.save();
+      current.lastError = "The Actor could not connect. Check backend and Hub readiness.";
+      this.reconnect(current);
     });
+  }
+  private reconnect(actor: ActorController): void {
+    const bootstrap = actor.bootstrap;
+    const id = bootstrap.actorId;
+    if (this.actors.get(id) !== actor) return;
+    const code = actor.hub?.connection.closeCode;
+    if (code === 4000 || code === 4001) {
+      bootstrap.suspended = code;
+      this.store.save();
+    }
+    this.actors.delete(id);
+    void actor.close();
+    if (!this.closed && bootstrap.enabled && !bootstrap.suspended) {
+      const timer = setTimeout(() => {
+        this.retry.delete(id);
+        this.launch(id);
+      }, 1500);
+      timer.unref();
+      this.retry.set(id, timer);
+    }
   }
   get(id: string): ActorController {
     const actor = this.actors.get(id);

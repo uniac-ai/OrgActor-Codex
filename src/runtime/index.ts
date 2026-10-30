@@ -60,6 +60,12 @@ export interface Bootstrap {
   cursor?: number;
   suspended?: number | "admission-rejected";
   approvals?: Record<string, ApprovalBinding>;
+  startupFailure?: {
+    phase: "hub" | "backend" | "native" | "history";
+    code: string;
+    native?: { method: string; code: number; reason?: "missing-rollout" };
+    closeCode?: number;
+  };
 }
 export interface Provision {
   fingerprint: string;

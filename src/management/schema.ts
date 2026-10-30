@@ -108,6 +108,7 @@ export interface PublicState {
   actors: ActorSnapshot[];
 }
 export class Fault extends Error {
+  native?: { method: string; code: number; reason?: "missing-rollout" };
   constructor(
     public code: string,
     message: string,

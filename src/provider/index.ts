@@ -213,6 +213,7 @@ export class CodexProvider {
     };
     this.store.data.actors[params.actorId] = bootstrap;
     this.store.save();
+    this.launch(params.actorId);
     let sent = false;
     try {
       const adapter = await this.adapter();

@@ -22,7 +22,10 @@ export interface CodexAdapter {
     bridgeUrl: string;
     bridgeToken: string;
   }): Promise<string>;
-  resume(threadId: string, binding?: { bridgeUrl: string; bridgeToken: string }): Promise<any>;
+  resume(
+    threadId: string,
+    binding?: { bridgeUrl: string; bridgeToken: string; initial?: boolean },
+  ): Promise<any>;
   bridgeReady(threadId: string): Promise<boolean>;
   read(threadId: string): Promise<any>;
   start(threadId: string, text: string, inputId: string): Promise<string>;
@@ -44,6 +47,8 @@ export class NativeProtocol extends EventEmitter {
       resolve(value: any): void;
       reject(error: unknown): void;
       timer: NodeJS.Timeout;
+      method: string;
+      threadId?: string;
       unmaterializedHistoryError?: string;
     }
   >();
@@ -73,19 +78,27 @@ export class NativeProtocol extends EventEmitter {
       if (!pending) return;
       this.pending.delete(frame.id);
       clearTimeout(pending.timer);
-      if (frame.error)
-        pending.reject(
+      if (frame.error) {
+        const fault =
           frame.error.code === -32600 &&
-            pending.unmaterializedHistoryError !== undefined &&
-            frame.error.message === pending.unmaterializedHistoryError
+          pending.unmaterializedHistoryError !== undefined &&
+          frame.error.message === pending.unmaterializedHistoryError
             ? new Fault(
                 "NATIVE_HISTORY_UNMATERIALIZED",
                 "This native session has no first user message yet.",
                 422,
               )
-            : new Fault("NATIVE_REJECTED", "Codex rejected the operation.", 422),
-        );
-      else pending.resolve(frame.result);
+            : new Fault("NATIVE_REJECTED", "Codex rejected the operation.", 422);
+        fault.native = {
+          method: pending.method,
+          code: typeof frame.error.code === "number" ? frame.error.code : -32000,
+          ...(pending.threadId &&
+          frame.error.message === `no rollout found for thread id ${pending.threadId}`
+            ? { reason: "missing-rollout" as const }
+            : {}),
+        };
+        pending.reject(fault);
+      } else pending.resolve(frame.result);
     });
     ws.on("error", () => {});
     ws.on("close", () => {
@@ -144,6 +157,8 @@ export class NativeProtocol extends EventEmitter {
         resolve,
         reject,
         timer,
+        method,
+        ...(typeof history.threadId === "string" ? { threadId: history.threadId } : {}),
         ...(method === "thread/read" &&
         history.includeTurns === true &&
         typeof history.threadId === "string"
@@ -189,6 +204,7 @@ export class NativeProtocol extends EventEmitter {
 }
 
 export class AppServerAdapter implements CodexAdapter {
+  private created = new Map<string, { bridgeUrl: string; bridgeToken: string }>();
   constructor(readonly protocol: NativeProtocol) {}
   async create(input: {
     cwd: string;
@@ -219,9 +235,39 @@ export class AppServerAdapter implements CodexAdapter {
     });
     if (typeof result.thread?.id !== "string")
       throw new Fault("NATIVE_UNKNOWN", "Codex did not return a session identity.");
+    this.created.set(result.thread.id, {
+      bridgeUrl: input.bridgeUrl,
+      bridgeToken: input.bridgeToken,
+    });
     return result.thread.id;
   }
-  resume(threadId: string, binding?: { bridgeUrl: string; bridgeToken: string }): Promise<any> {
+  async resume(
+    threadId: string,
+    binding?: { bridgeUrl: string; bridgeToken: string; initial?: boolean },
+  ): Promise<any> {
+    const created = this.created.get(threadId);
+    if (binding?.initial && created) {
+      if (created.bridgeUrl !== binding.bridgeUrl || created.bridgeToken !== binding.bridgeToken)
+        throw new Fault(
+          "NATIVE_BINDING_MISMATCH",
+          "The native session has a different bridge binding.",
+        );
+      const read = await this.read(threadId);
+      const thread = read.thread;
+      if (
+        thread?.id !== threadId ||
+        thread.historyMode !== "legacy" ||
+        thread.status?.type !== "idle" ||
+        thread.preview !== "" ||
+        !Array.isArray(thread.turns) ||
+        thread.turns.length
+      )
+        throw new Fault(
+          "NATIVE_INITIAL_STATE_MISMATCH",
+          "The created native session no longer has its initial empty state.",
+        );
+      return read;
+    }
     return this.protocol.request("thread/resume", {
       threadId,
       excludeTurns: true,
@@ -272,6 +318,7 @@ export class AppServerAdapter implements CodexAdapter {
     }
   }
   async start(threadId: string, text: string, inputId: string): Promise<string> {
+    this.created.delete(threadId);
     const r = await this.protocol.request("turn/start", {
       threadId,
       input: [{ type: "text", text }],
@@ -280,6 +327,7 @@ export class AppServerAdapter implements CodexAdapter {
     return r.turn.id;
   }
   async steer(threadId: string, turnId: string, text: string, inputId: string): Promise<string> {
+    this.created.delete(threadId);
     const r = await this.protocol.request("turn/steer", {
       threadId,
       expectedTurnId: turnId,

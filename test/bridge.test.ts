@@ -57,6 +57,7 @@ test("native HTTP MCP receives schema-valid Actor creation without structured/te
   ];
   let calls = 0;
   const actor = {
+    hubReady: true,
     hub: {
       connection: { connected: true },
       tools,

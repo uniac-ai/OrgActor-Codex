@@ -48,8 +48,14 @@ async function fixture(t: any) {
       if (frame.method === "thread/start") {
         state.mode = frame.params.historyMode ?? "paginated";
         result = { thread: metadata() };
-      } else if (frame.method === "thread/resume") result = { thread: metadata() };
-      else if (frame.method === "thread/read") {
+      } else if (frame.method === "thread/resume") {
+        if (!state.materialized)
+          error = {
+            code: -32600,
+            message: `no rollout found for thread id ${frame.params.threadId}`,
+          };
+        result = { thread: metadata() };
+      } else if (frame.method === "thread/read") {
         if (frame.params.includeTurns) {
           error =
             state.error ??
@@ -90,6 +96,7 @@ for (const Adapter of [SshAdapter, AppServerAdapter])
     await native.resume(threadId, {
       bridgeUrl: "http://127.0.0.1/mcp",
       bridgeToken: "BRIDGE_TEST_ONLY",
+      initial: true,
     });
     const root = mkdtempSync(join(tmpdir(), "orgactor-empty-history-"));
     t.after(() => rmSync(root, { recursive: true, force: true }));
@@ -111,6 +118,7 @@ for (const Adapter of [SshAdapter, AppServerAdapter])
     assert.equal(actor.turnId, null);
     assert.equal(state.mode, "legacy");
     assert.ok(!state.calls.some((c) => ["thread/name/set", "turn/start"].includes(c.method)));
+    assert.ok(!state.calls.some((c) => c.method === "thread/resume"));
     state.materialized = true;
     state.path = "/owned/history.jsonl";
     state.turns = [
@@ -134,6 +142,60 @@ for (const Adapter of [SshAdapter, AppServerAdapter])
     assert.equal(bootstrap.submissions[0].result?.status, "completed");
     assert.equal(bootstrap.submissions[0].result?.output, "actual");
   });
+
+test("initial reuse requires the creating adapter, unchanged binding, empty identity and no submitted request", async (t) => {
+  const { protocol, state } = await fixture(t);
+  const native = new AppServerAdapter(protocol);
+  const binding = {
+    bridgeUrl: "http://127.0.0.1/mcp",
+    bridgeToken: "CAPABILITY_SENTINEL",
+    initial: true,
+  };
+  await native.create({ cwd: "/owned", ...binding });
+  await assert.rejects(
+    new AppServerAdapter(protocol).resume("owned", binding),
+    (e: any) => e.code === "NATIVE_REJECTED" && e.native.reason === "missing-rollout",
+  );
+  await assert.rejects(native.resume("foreign", binding), (e: any) => e.code === "NATIVE_REJECTED");
+  await assert.rejects(
+    native.resume("owned", { ...binding, bridgeToken: "OTHER" }),
+    (e: any) => e.code === "NATIVE_BINDING_MISMATCH",
+  );
+  for (const mismatch of [
+    { id: "foreign" },
+    { status: "active" },
+    { mode: "paginated" },
+    { preview: "Existing user message" },
+    { turns: [{ id: "foreign-turn", status: "completed", items: [] }] },
+  ]) {
+    Object.assign(
+      state,
+      { id: "owned", mode: "legacy", status: "idle", preview: "", turns: [], materialized: true },
+      mismatch,
+    );
+    await assert.rejects(
+      native.resume("owned", binding),
+      (e: any) => e.code === "NATIVE_INITIAL_STATE_MISMATCH",
+    );
+  }
+  Object.assign(state, {
+    id: "owned",
+    mode: "legacy",
+    status: "idle",
+    preview: "",
+    turns: [],
+    materialized: false,
+    error: { code: -32601, message: "UNSUPPORTED SECRET_NATIVE_PAYLOAD" },
+  });
+  await assert.rejects(
+    native.resume("owned", binding),
+    (e: any) =>
+      e.code === "NATIVE_REJECTED" && !JSON.stringify(e).includes("SECRET_NATIVE_PAYLOAD"),
+  );
+  state.error = undefined;
+  await assert.rejects(native.start("owned", "mock submitted request", "input"));
+  await assert.rejects(native.resume("owned", binding), (e: any) => e.code === "NATIVE_REJECTED");
+});
 
 test("only the exact scoped native unmaterialized signal plus idle legacy metadata establishes empty history", async (t) => {
   const { protocol, state, empty } = await fixture(t);

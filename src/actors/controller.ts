@@ -29,12 +29,17 @@ export class ActorController extends EventEmitter {
   turnId: string | null = null;
   output = "";
   lastError?: string;
+  hubReady = false;
+  startupPhase: "hub" | "backend" | "native" | "history" = "hub";
   private pumping = false;
   private requests = new Map<string, PendingRequest>();
   private unwatch?: () => void;
   private stopped = false;
   private appliedInputs = new Set<string>();
   private observedAt: string | null = null;
+  private hubOpening?: Promise<void>;
+  private nativeOpening?: Promise<void>;
+  private nativeOpened = false;
   constructor(
     readonly bootstrap: Bootstrap,
     private store: RuntimeStore,
@@ -66,7 +71,13 @@ export class ActorController extends EventEmitter {
         turnId: r.params.turnId ?? null,
         summary: approvalSummary(r),
       })),
-      ...(this.lastError ? { lastError: this.lastError } : {}),
+      ...(this.lastError || this.bootstrap.startupFailure
+        ? {
+            lastError:
+              this.lastError ??
+              `Actor startup failed during ${this.bootstrap.startupFailure?.phase} (${this.bootstrap.startupFailure?.code}).`,
+          }
+        : {}),
       output: this.output,
     };
   }
@@ -190,19 +201,41 @@ export class ActorController extends EventEmitter {
     ];
   }
   async open(): Promise<void> {
-    this.stopped = false;
-    const hub = new ActorHubSession(this.bootstrap.hubUrl, this.exposures());
-    this.hub = hub;
-    hub.connection.once("closed", () => this.emit("disconnected"));
-    await hub.open(this.bootstrap.actorId, this.bootstrap.credential);
+    if (this.stopped) return;
+    if (!this.hubOpening) {
+      const hub = new ActorHubSession(this.bootstrap.hubUrl, this.exposures());
+      this.hub = hub;
+      hub.connection.once("closed", () => this.emit("disconnected"));
+      this.hubOpening = hub.open(this.bootstrap.actorId, this.bootstrap.credential).then(() => {
+        if (!this.stopped) this.hubReady = true;
+      });
+    }
+    await this.hubOpening;
+    if (this.stopped || !this.bootstrap.threadId) return;
+    this.nativeOpening ??= this.openNative();
+    await this.nativeOpening;
+  }
+  private async openNative(): Promise<void> {
+    this.startupPhase = "backend";
     const adapter = await this.getAdapter();
+    if (this.stopped) return;
     this.adapter = adapter;
     this.unwatch = adapter.watch((event) => this.observe(event));
+    this.startupPhase = "native";
     await adapter.resume(this.bootstrap.threadId, {
       bridgeUrl: this.store.data.settings.bridgeUrl as string,
       bridgeToken: this.bootstrap.bridgeToken,
+      initial: this.bootstrap.submissions.length === 0,
     });
+    if (this.stopped) return;
+    this.startupPhase = "history";
     await this.reconcile();
+    if (this.stopped) return;
+    this.nativeOpened = true;
+    if (this.bootstrap.startupFailure) {
+      delete this.bootstrap.startupFailure;
+      this.store.save();
+    }
     this.lastError = undefined;
     void this.pump();
     void this.watchInbox();
@@ -219,6 +252,12 @@ export class ActorController extends EventEmitter {
       );
   }
   enqueue(id: string, text: string, from = "operator", cause: string | null = null): Submission {
+    if (!this.bootstrap.threadId || (this.nativeOpening && !this.nativeOpened))
+      throw new Fault(
+        "NATIVE_BINDING_PENDING",
+        "The Actor's native session is still being prepared.",
+        503,
+      );
     const existing = this.bootstrap.submissions.find((s) => s.id === id);
     if (existing) {
       if (existing.text !== text || existing.from !== from)
@@ -294,6 +333,7 @@ export class ActorController extends EventEmitter {
     if (
       this.pumping ||
       this.stopped ||
+      (this.nativeOpening && !this.nativeOpened) ||
       !this.adapter ||
       this.turnId ||
       this.bootstrap.submissions.some((s) => ["sending", "unknown", "running"].includes(s.state))
@@ -703,6 +743,7 @@ export class ActorController extends EventEmitter {
   }
   async close(): Promise<void> {
     this.stopped = true;
+    this.hubReady = false;
     this.unwatch?.();
     this.unwatch = undefined;
     this.requests.clear();
