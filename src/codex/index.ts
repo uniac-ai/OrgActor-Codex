@@ -40,7 +40,12 @@ export class NativeProtocol extends EventEmitter {
   private sequence = 0;
   private pending = new Map<
     number,
-    { resolve(value: any): void; reject(error: unknown): void; timer: NodeJS.Timeout }
+    {
+      resolve(value: any): void;
+      reject(error: unknown): void;
+      timer: NodeJS.Timeout;
+      unmaterializedHistoryError?: string;
+    }
   >();
   connected = false;
   constructor(
@@ -69,7 +74,17 @@ export class NativeProtocol extends EventEmitter {
       this.pending.delete(frame.id);
       clearTimeout(pending.timer);
       if (frame.error)
-        pending.reject(new Fault("NATIVE_REJECTED", "Codex rejected the operation.", 422));
+        pending.reject(
+          frame.error.code === -32600 &&
+            pending.unmaterializedHistoryError !== undefined &&
+            frame.error.message === pending.unmaterializedHistoryError
+            ? new Fault(
+                "NATIVE_HISTORY_UNMATERIALIZED",
+                "This native session has no first user message yet.",
+                422,
+              )
+            : new Fault("NATIVE_REJECTED", "Codex rejected the operation.", 422),
+        );
       else pending.resolve(frame.result);
     });
     ws.on("error", () => {});
@@ -124,7 +139,19 @@ export class NativeProtocol extends EventEmitter {
           new Fault("NATIVE_UNKNOWN", "The Codex outcome is unknown. Reconcile before retrying."),
         );
       }, timeoutMs);
-      this.pending.set(id, { resolve, reject, timer });
+      const history = params as { threadId?: unknown; includeTurns?: unknown };
+      this.pending.set(id, {
+        resolve,
+        reject,
+        timer,
+        ...(method === "thread/read" &&
+        history.includeTurns === true &&
+        typeof history.threadId === "string"
+          ? {
+              unmaterializedHistoryError: `thread ${history.threadId} is not materialized yet; includeTurns is unavailable before first user message`,
+            }
+          : {}),
+      });
       this.ws.send(JSON.stringify({ id, method, params }), (error) => {
         if (error) {
           clearTimeout(timer);
@@ -175,6 +202,7 @@ export class AppServerAdapter implements CodexAdapter {
       approvalPolicy: "on-request",
       sandbox: "read-only",
       ephemeral: false,
+      historyMode: "legacy",
       modelProvider: "openai",
       allowProviderModelFallback: false,
       serviceName: "orgactor-codex",
@@ -223,8 +251,25 @@ export class AppServerAdapter implements CodexAdapter {
     const org = r.data?.find((s: any) => s.name === "org");
     return !!org && !org.toolsError && Object.keys(org.tools ?? {}).length > 0;
   }
-  read(threadId: string): Promise<any> {
-    return this.protocol.request("thread/read", { threadId, includeTurns: true });
+  async read(threadId: string): Promise<any> {
+    try {
+      return await this.protocol.request("thread/read", { threadId, includeTurns: true });
+    } catch (error) {
+      if (!(error instanceof Fault) || error.code !== "NATIVE_HISTORY_UNMATERIALIZED") throw error;
+      const metadata = await this.protocol.request("thread/read", {
+        threadId,
+        includeTurns: false,
+      });
+      const thread = metadata.thread;
+      if (
+        thread?.id !== threadId ||
+        thread.historyMode !== "legacy" ||
+        thread.status?.type !== "idle" ||
+        thread.preview !== ""
+      )
+        throw error;
+      return { ...metadata, thread: { ...thread, turns: [] } };
+    }
   }
   async start(threadId: string, text: string, inputId: string): Promise<string> {
     const r = await this.protocol.request("turn/start", {

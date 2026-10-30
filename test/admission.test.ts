@@ -24,7 +24,14 @@ for (const binding of ["ssh", "app-server"] as const)
         if (method === "account/read")
           return { account: accountType ? { type: accountType } : null };
         if (method === "account/rateLimits/read") return { ordinaryUsageAllowed: included };
-        if (method === "thread/read") return { thread: { modelProvider: provider } };
+        if (method === "thread/read") {
+          assert.equal(
+            params.includeTurns,
+            false,
+            "admission needs metadata, not history hydration",
+          );
+          return { thread: { modelProvider: provider } };
+        }
         if (method === "thread/start") {
           setupFrames.push(params);
           return { thread: { id: "native-session" } };

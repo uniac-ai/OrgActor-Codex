@@ -31,6 +31,8 @@ Readiness is `unconfigured`, `unreachable`, `rejected` or `ready` from explicit 
 
 Backend closure invalidates the owned pending initialization as well as the current connection. A late initializer cannot publish an old adapter, close a newer transport or clear a newer connection attempt after Setup changes configuration.
 
+Managed native sessions request the legacy persisted history contract used by recovery. Before the first user message, the backend can explicitly report that this exact thread is not materialized. That specific native code/message is recognized only for its matching full-history request; an idle legacy metadata read with the same identity and empty preview confirms initial empty history. Unsupported paginated history, other rejections and inconsistent metadata remain errors. Execution admission reads metadata for the model provider without requiring history hydration. Presentation naming is independent of readiness.
+
 ## Module contracts and layout
 
 | Directory                               | Contract and owned state                                                                                | Dependencies                                              |

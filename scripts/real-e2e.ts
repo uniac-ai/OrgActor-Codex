@@ -152,10 +152,6 @@ try {
   const actorId = result.actor.id;
   const bootstrap = module.store.data.actors[actorId];
   threads.add(bootstrap.threadId);
-  await native.protocol.request("thread/name/set", {
-    threadId: bootstrap.threadId,
-    name: `OrgActor-Codex E2E ${actorId}`,
-  });
   const actor = await until(
     "Actor session",
     () => module.actors.actors.get(actorId),
@@ -167,6 +163,14 @@ try {
     title: `OrgActor-Codex E2E ${actorId}`,
   };
   save();
+  const initial = await native.read(bootstrap.threadId);
+  assert.equal(initial.thread.turns.length, 0);
+  evidence.automaticFirstHistoryRead = {
+    historyMode: initial.thread.historyMode,
+    turns: initial.thread.turns.length,
+    beforePresentationRename: true,
+    beforeAnyModelTurn: true,
+  };
   evidence.nativeMcpReady = await until("Thread-specific org MCP", async () => {
     const status = await native.protocol.request("mcpServerStatus/list", {
       threadId: bootstrap.threadId,
@@ -185,6 +189,10 @@ try {
     evidence.bridgeObservations = module.bridge.observations;
     save();
     return native.bridgeReady(bootstrap.threadId);
+  });
+  await native.protocol.request("thread/name/set", {
+    threadId: bootstrap.threadId,
+    name: `OrgActor-Codex E2E ${actorId}`,
   });
   assert.ok(actor?.hub);
   const actorTools = await actor.hub.refreshTools();

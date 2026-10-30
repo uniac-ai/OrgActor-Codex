@@ -41,7 +41,10 @@ export class SetupService {
       if (account.account?.type !== "chatgpt") throw new Error("ChatGPT authentication required");
       const quota = await native.protocol.request("account/rateLimits/read");
       if (quota.ordinaryUsageAllowed !== true) throw new Error("Included plan usage required");
-      const session = await native.read(threadId);
+      const session = await native.protocol.request("thread/read", {
+        threadId,
+        includeTurns: false,
+      });
       if (session.thread?.modelProvider !== "openai") throw new Error("OpenAI session required");
     } catch {
       throw new Fault(
