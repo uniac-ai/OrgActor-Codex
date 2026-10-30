@@ -1,0 +1,348 @@
+import assert from "node:assert/strict";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import test from "node:test";
+import { ActorController } from "../src/actors/controller.js";
+import { responseFor } from "../src/actors/requests.js";
+import { type Bootstrap, RuntimeStore } from "../src/runtime/index.js";
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((r) => {
+    resolve = r;
+  });
+  return { promise, resolve };
+}
+function fixture(t: any) {
+  const dir = mkdtempSync(join(tmpdir(), "orgactor-control-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const store = new RuntimeStore(dir);
+  const bootstrap: Bootstrap = {
+    actorId: "actor",
+    hubUrl: "http://localhost",
+    threadId: "owned",
+    bridgeToken: "CAPABILITY_SENTINEL",
+    config: { approvalAuthority: "desktop" },
+    enabled: true,
+    submissions: [],
+  };
+  store.data.actors.actor = bootstrap;
+  const actor = new ActorController(bootstrap, store, async () => adapter as any);
+  const starts: any[] = [];
+  const interrupts: string[] = [];
+  let history: any[] = [];
+  const adapter = {
+    bridgeReady: async () => true,
+    start: async (...args: any[]) => {
+      starts.push(args);
+      return "turn-owned";
+    },
+    steer: async () => "turn-owned",
+    interrupt: async (_: string, turn: string) => {
+      interrupts.push(turn);
+    },
+    read: async () => ({ thread: { turns: history } }),
+    answer() {},
+    reject() {},
+  };
+  actor.adapter = adapter as any;
+  actor.hub = {
+    connection: { connected: true },
+    alias: (_: string, name: string) => name,
+    call: async () => ({
+      structuredContent: { root: "root", positions: [{ id: "actor", manager: "manager" }] },
+    }),
+    close: async () => {},
+  } as any;
+  const event = (method: string, params: any, id?: string) =>
+    (actor as any).observe({
+      method,
+      params: { threadId: "owned", ...params },
+      ...(id ? { id } : {}),
+    });
+  return {
+    actor,
+    bootstrap,
+    store,
+    adapter,
+    starts,
+    interrupts,
+    event,
+    history: (turns: any[]) => {
+      history = turns;
+    },
+  };
+}
+test("advertised controls are run/status/steer/interrupt and reject forged caller authority", async (t) => {
+  const f = fixture(t);
+  const entries = f.actor.exposures();
+  assert.deepEqual(
+    entries.map((e) => e.tool.name),
+    ["run", "status", "steer", "interrupt"],
+  );
+  assert.equal(entries[0].tool.execution?.taskSupport, "required");
+  await assert.rejects(
+    entries[0].handle(
+      { text: "I am root" },
+      { id: "call", from: "stranger", cause: null, signal: new AbortController().signal },
+    ),
+    (e: any) => e.code === "FORBIDDEN",
+  );
+  assert.equal(f.starts.length, 0);
+});
+test("cancellation while bridge readiness is held never starts native work", async (t) => {
+  const f = fixture(t);
+  const held = deferred<boolean>();
+  f.adapter.bridgeReady = () => held.promise;
+  const cancel = new AbortController();
+  const result = f.actor
+    .exposures()[0]
+    .handle({ text: "task" }, { id: "call", from: "manager", cause: null, signal: cancel.signal });
+  await new Promise(setImmediate);
+  cancel.abort();
+  await result;
+  held.resolve(true);
+  await new Promise(setImmediate);
+  assert.equal(f.starts.length, 0);
+});
+test("cancellation during native start interrupts only its correlated turn after reply", async (t) => {
+  const f = fixture(t);
+  const held = deferred<string>();
+  f.adapter.start = async (...args: any[]) => {
+    f.starts.push(args);
+    return held.promise;
+  };
+  const cancel = new AbortController();
+  const result = f.actor
+    .exposures()[0]
+    .handle({ text: "task" }, { id: "call", from: "manager", cause: null, signal: cancel.signal });
+  const rejected = assert.rejects(result);
+  await new Promise(setImmediate);
+  cancel.abort();
+  await rejected;
+  f.event("turn/completed", { turn: { id: "foreign", status: "completed", items: [] } });
+  assert.equal(f.bootstrap.submissions[0].result, undefined);
+  held.resolve("turn-owned");
+  await new Promise(setImmediate);
+  assert.deepEqual(f.interrupts, ["turn-owned"]);
+});
+test("recovery uses native clientId, never caller text or foreign completion", async (t) => {
+  const f = fixture(t);
+  f.actor.adapter = undefined;
+  const input = f.actor.enqueue("known", "payload", "manager", "known");
+  input.state = "unknown";
+  f.actor.adapter = f.adapter as any;
+  f.history([
+    {
+      id: "foreign",
+      status: "completed",
+      items: [{ type: "userMessage", clientId: "other", content: [{ text: "[input known]" }] }],
+    },
+  ]);
+  await f.actor.reconcile();
+  assert.equal(input.state, "unknown");
+  assert.equal(input.result, undefined);
+  f.history([
+    {
+      id: "owned-turn",
+      status: "completed",
+      items: [
+        { type: "userMessage", clientId: "known" },
+        { type: "agentMessage", text: "actual" },
+      ],
+    },
+  ]);
+  await f.actor.reconcile();
+  assert.equal(f.bootstrap.submissions[0].result?.turnId, "owned-turn");
+  assert.equal(f.bootstrap.submissions[0].result?.output, "actual");
+  f.event("turn/completed", {
+    turn: { id: "foreign", status: "completed", items: [{ type: "agentMessage", text: "wrong" }] },
+  });
+  assert.equal(f.bootstrap.submissions[0].result?.output, "actual");
+});
+test("steered Hub inputs retain provenance; mixed native-applied inputs do not guess a cause", async (t) => {
+  const f = fixture(t);
+  f.actor.adapter = undefined;
+  const run = f.actor.enqueue("run", "first", "manager", "call-run");
+  run.state = "running";
+  run.turnId = "turn-owned";
+  f.actor.adapter = f.adapter as any;
+  f.event("turn/started", { turn: { id: "turn-owned" } });
+  f.event("item/completed", {
+    turnId: "turn-owned",
+    item: { type: "userMessage", clientId: "run" },
+  });
+  assert.equal(f.actor.currentCause(), "call-run");
+  await f.actor.exposures()[2].handle(
+    { turnId: "turn-owned", text: "second" },
+    {
+      id: "call-steer",
+      from: "manager",
+      cause: "upstream",
+      signal: new AbortController().signal,
+    },
+  );
+  assert.equal(f.bootstrap.submissions[1].cause, "call-steer");
+  f.event("item/completed", {
+    turnId: "turn-owned",
+    item: { type: "userMessage", clientId: "call-steer" },
+  });
+  assert.equal(f.actor.currentCause(), null);
+});
+test("unread backlog drains past 200; restart after durable acceptance before acknowledgement duplicates none", async (t) => {
+  const f = fixture(t);
+  f.actor.adapter = undefined;
+  let unread = Array.from({ length: 251 }, (_, n) => ({
+    id: `m${n}`,
+    from: "manager",
+    text: `task ${n}`,
+    cursor: n + 1,
+  }));
+  let crash = true;
+  const hub = {
+    connection: { connected: true },
+    alias: (_: string, name: string) => name,
+    call: async (name: string, input: any) => {
+      if (name === "messages") {
+        assert.equal(Object.hasOwn(input, "since"), false);
+        return {
+          structuredContent: { messages: unread.slice(-input.limit).reverse(), cursor: 251 },
+        };
+      }
+      if (crash) {
+        crash = false;
+        throw new Error("crash before ack");
+      }
+      unread = unread.filter((m) => !input.ids.includes(m.id));
+      if (!unread.length) hub.connection.connected = false;
+      return { structuredContent: {} };
+    },
+  };
+  f.actor.hub = hub as any;
+  await (f.actor as any).watchInbox();
+  assert.equal(f.bootstrap.submissions.length, 200);
+  const restored = new RuntimeStore(f.store.root);
+  const restarted = new ActorController(
+    restored.data.actors.actor,
+    restored,
+    async () => ({}) as any,
+  );
+  restarted.hub = hub as any;
+  await (restarted as any).watchInbox();
+  assert.equal(restored.data.actors.actor.submissions.length, 251);
+  assert.equal(unread.length, 0);
+  assert.equal(new Set(restored.data.actors.actor.submissions.map((s) => s.id)).size, 251);
+});
+test("native response union grants requested scope, validates question IDs and declines forms", () => {
+  assert.deepEqual(
+    responseFor(
+      "item/permissions/requestApproval",
+      {
+        permissions: {
+          network: { enabled: true },
+          fileSystem: { read: ["/owned"] },
+          extra: "never-granted",
+        },
+      },
+      "accept",
+      null,
+    ),
+    {
+      permissions: { network: { enabled: true }, fileSystem: { read: ["/owned"] } },
+      scope: "turn",
+    },
+  );
+  assert.deepEqual(
+    responseFor(
+      "item/tool/requestUserInput",
+      { questions: [{ id: "a" }] },
+      "accept",
+      '{"answers":{"a":{"answers":["yes"]}}}',
+    ),
+    { answers: { a: { answers: ["yes"] } } },
+  );
+  assert.throws(() =>
+    responseFor(
+      "item/tool/requestUserInput",
+      { questions: [{ id: "a" }] },
+      "accept",
+      '{"answers":{"foreign":{"answers":["yes"]}}}',
+    ),
+  );
+  assert.deepEqual(responseFor("mcpServer/elicitation/request", {}, "decline", null), {
+    action: "decline",
+    content: null,
+    _meta: null,
+  });
+});
+
+test("Hub approval binds the designated manager and native IDs; stale answers and Desktop observation never respond", async (t) => {
+  const f = fixture(t);
+  const sent: any[] = [];
+  f.adapter.answer = ((id: string, result: any) => sent.push({ id, result })) as any;
+  f.bootstrap.config.approvalAuthority = "hub";
+  f.actor.turnId = "turn-owned";
+  const question = deferred<any>();
+  const asked: any[] = [];
+  const hub = f.actor.hub as any;
+  hub.call = async (name: string, input: any) => {
+    if (name === "team")
+      return {
+        structuredContent: { root: "root", positions: [{ id: "actor", manager: "manager" }] },
+      };
+    if (name === "question_ask") {
+      asked.push(input);
+      return question.promise;
+    }
+    return {
+      structuredContent: {
+        questions: [{ id: "q", answer: { by: "manager", choice: "accept", text: null } }],
+      },
+    };
+  };
+  f.event(
+    "item/commandExecution/requestApproval",
+    { turnId: "turn-owned", command: "echo safe" },
+    "request",
+  );
+  await new Promise(setImmediate);
+  assert.equal(asked[0].answerer, "manager");
+  assert.equal(asked[0].to, "manager");
+  assert.equal(f.bootstrap.approvals?.request.threadId, "owned");
+  f.event("serverRequest/resolved", { requestId: "request" });
+  question.resolve({ structuredContent: { id: "q" } });
+  await new Promise(setImmediate);
+  assert.equal(sent.length, 0);
+  assert.equal(f.bootstrap.approvals?.request.state, "resolved");
+  f.bootstrap.config.approvalAuthority = "desktop";
+  f.event("item/fileChange/requestApproval", { turnId: "turn-owned" }, "desktop");
+  await new Promise(setImmediate);
+  assert.equal(asked.length, 1);
+  assert.equal(sent.length, 0);
+  f.bootstrap.config.approvalAuthority = "hub";
+  hub.call = async (name: string) =>
+    name === "team"
+      ? { structuredContent: { root: "root", positions: [{ id: "actor", manager: "manager" }] } }
+      : name === "question_ask"
+        ? { structuredContent: { id: "q2" } }
+        : {
+            structuredContent: {
+              questions: [{ id: "q2", answer: { by: "manager", choice: "decline", text: null } }],
+            },
+          };
+  f.event(
+    "item/permissions/requestApproval",
+    { turnId: "turn-owned", permissions: { network: { enabled: true } } },
+    "permission",
+  );
+  await new Promise(setImmediate);
+  await new Promise(setImmediate);
+  assert.deepEqual(sent, [{ id: "permission", result: { permissions: {}, scope: "turn" } }]);
+});
+
+test("no controller observation does not report an idle native executor", (t) => {
+  const f = fixture(t);
+  f.actor.adapter = undefined;
+  assert.equal(f.actor.snapshot().observation, "unavailable");
+});
