@@ -3,7 +3,6 @@ import {
   CheckCircle2,
   CircleHelp,
   KeyRound,
-  LogOut,
   Monitor,
   Pause,
   Play,
@@ -30,7 +29,6 @@ import {
 import {
   Sidebar,
   SidebarContent,
-  SidebarFooter,
   SidebarGroup,
   SidebarGroupContent,
   SidebarGroupLabel,
@@ -110,7 +108,7 @@ function SetupView(p: SetupFeature) {
   );
   return (
     <>
-      <Heading title="Setup">Connect your Codex workspace and AgentOrg Hub.</Heading>
+      <Heading title="Setup">Connect your Codex workspace.</Heading>
       <div className="setup-layout">
         <div className="stack">
           <Card>
@@ -181,23 +179,6 @@ function SetupView(p: SetupFeature) {
                 "Container MCP address",
                 false,
                 "This address must be reachable from the Codex host.",
-              )}
-            </CardContent>
-          </Card>
-          <Card>
-            <CardHeader>
-              <CardTitle>AgentOrg Hub</CardTitle>
-            </CardHeader>
-            <CardContent className="stack">
-              {field("hubUrl", "Hub URL")}
-              {field("providerId", "Provider ID")}
-              {field(
-                "credential",
-                "Provider credential",
-                true,
-                p.state.settings.hub?.credentialPresent
-                  ? "A credential is stored. Leave blank to keep it."
-                  : "Enroll this Provider in the Hub first.",
               )}
             </CardContent>
           </Card>
@@ -539,12 +520,6 @@ export const views = {
             </SidebarGroupContent>
           </SidebarGroup>
         </SidebarContent>
-        <SidebarFooter>
-          <Button variant="ghost" className="justify-start" onClick={p.onLogout}>
-            <LogOut />
-            Sign out
-          </Button>
-        </SidebarFooter>
       </Sidebar>
       <SidebarInset>
         <div className="mobile-bar">
@@ -568,36 +543,14 @@ export const views = {
       </SidebarInset>
     </SidebarProvider>
   ),
-  SignIn: (p) => (
-    <div className="signin">
-      <Card>
-        <CardHeader>
-          <KeyRound className="mb-3 size-6" />
-          <CardTitle>Operator sign-in</CardTitle>
-          <CardDescription>
-            Open the one-time link printed when OrgActor-Codex starts, or paste its sign-in token.
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="stack">
-          {p.error ? (
-            <div role="alert" className="error">
-              {p.error}
-            </div>
-          ) : null}
-          <Field label="Sign-in token">
-            <Input
-              aria-label="Sign-in token"
-              type="password"
-              autoComplete="off"
-              value={p.token}
-              onChange={(e) => p.onToken(e.target.value)}
-            />
-          </Field>
-          <Button disabled={p.loading || !p.token} onClick={p.onSignIn}>
-            {p.loading ? "Connecting…" : "Sign in"}
-          </Button>
-        </CardContent>
-      </Card>
+  Loading: (p) => (
+    <div className="console-main">
+      <Heading title="Connecting…" />
+      {p.error ? (
+        <div role="alert" className="error">
+          {p.error}
+        </div>
+      ) : null}
     </div>
   ),
   Setup: SetupView,
@@ -608,7 +561,7 @@ export const views = {
         <CardHeader>
           <CardTitle>Hub connection</CardTitle>
           <CardDescription>
-            {p.state.settings.hub?.url ?? "Configure a Hub in Setup."}
+            {p.state.settings.hub?.url ?? "Hub is not configured on this server."}
           </CardDescription>
         </CardHeader>
         <CardContent className="stack">
@@ -624,6 +577,9 @@ export const views = {
                     connecting: "Connecting",
                     paused: "Paused",
                     suspended: "Suspended",
+                    unconfigured: "Unconfigured",
+                    unreachable: "Unreachable",
+                    rejected: "Rejected",
                   }[p.state.provider.state]
                 }
               </Badge>
@@ -636,16 +592,20 @@ export const views = {
           {p.state.provider.error ? <div className="notice">{p.state.provider.error}</div> : null}
           <div className="actions">
             <Button disabled={p.busy || !p.state.settings.hub} onClick={p.onToggle}>
-              {p.state.provider.state === "suspended" || !p.state.provider.enabled ? (
+              {!p.state.settings.hub ||
+              ["suspended", "rejected"].includes(p.state.provider.state) ||
+              !p.state.provider.enabled ? (
                 <Play />
               ) : (
                 <Pause />
               )}
-              {p.state.provider.state === "suspended"
+              {["suspended", "rejected"].includes(p.state.provider.state)
                 ? "Resume Provider"
-                : p.state.provider.enabled
-                  ? "Pause Provider"
-                  : "Enable Provider"}
+                : !p.state.settings.hub
+                  ? "Enable Provider"
+                  : p.state.provider.enabled
+                    ? "Pause Provider"
+                    : "Enable Provider"}
             </Button>
             <Button variant="outline" disabled={p.busy} onClick={p.onProbe}>
               <RefreshCw />

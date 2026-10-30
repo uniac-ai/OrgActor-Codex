@@ -9,8 +9,7 @@ let dir: string;
 test.beforeEach(async ({ page }) => {
   dir = mkdtempSync(join(tmpdir(), "orgactor-browser-"));
   module = await startServer({ root: dir, port: 0 });
-  const invitation = module.auth.issue();
-  await page.goto(`${module.url}/#sign-in=${invitation}`);
+  await page.goto(module.url);
   await expect(page.getByRole("heading", { name: "Setup", exact: true })).toBeVisible();
 });
 test.afterEach(async () => {
@@ -41,14 +40,25 @@ const screenshot = async (page: any, name: string) => {
   await page.screenshot({ path: resolve(`evidence/console/${name}.png`), fullPage: true });
 };
 
-test("one-time sign-in removes URL token and sign-out closes operator access", async ({ page }) => {
-  expect(page.url()).not.toContain("sign-in");
-  await page.getByRole("button", { name: "Sign out" }).click();
-  await expect(page.getByRole("heading", { name: "Operator sign-in" })).toBeVisible();
-  await screenshot(page, "sign-in");
-  await page.getByLabel("Sign-in token").fill("expired");
-  await page.getByRole("button", { name: "Sign in", exact: true }).click();
-  await expect(page.getByRole("alert")).toContainText("expired or was already used");
+test("console opens directly and sends plain same-origin API requests", async ({ page }) => {
+  const requests: { path: string; headers: Record<string, string> }[] = [];
+  page.on("request", (request) => {
+    if (new URL(request.url()).pathname.startsWith("/api/"))
+      requests.push({ path: new URL(request.url()).pathname, headers: request.headers() });
+  });
+  await page.reload();
+  await expect(page.getByRole("heading", { name: "Setup", exact: true })).toBeVisible();
+  await expect(page.getByLabel("Provider ID", { exact: true })).toHaveCount(0);
+  await expect(page.getByLabel("Hub URL", { exact: true })).toHaveCount(0);
+  await page.getByRole("button", { name: "Check Codex connection" }).click();
+  await expect(page.getByText("backend unconfigured", { exact: true })).toBeVisible();
+  expect(requests.some((r) => r.path === "/api/state")).toBe(true);
+  expect(requests.some((r) => r.path === "/api/setup/probes/backend")).toBe(true);
+  for (const { headers } of requests) {
+    expect(headers.authorization).toBeUndefined();
+    expect(headers.cookie).toBeUndefined();
+    expect(headers["x-csrf-token"]).toBeUndefined();
+  }
 });
 test("setup saves real ManagementApi configuration and probes factual missing prerequisites", async ({
   page,
@@ -70,12 +80,8 @@ test("SSH credentials are write-only and never rehydrate into forms", async ({ p
   await page.getByLabel("SSH user").fill("operator");
   await page.getByLabel("SSH private key").fill("PRIVATE_KEY_SENTINEL");
   await page.getByLabel("Verified known-host entry").fill("HOST_SENTINEL");
-  await page.getByLabel("Hub URL").fill("http://127.0.0.1:8740");
-  await page.getByLabel("Provider ID").fill("provider");
-  await page.getByLabel("Provider credential").fill("PROVIDER_SENTINEL");
   await page.getByRole("button", { name: "Save connections" }).click();
   await expect(page.getByLabel("SSH private key")).toHaveValue("");
-  await expect(page.getByLabel("Provider credential")).toHaveValue("");
   await expect(page.getByText("A key is stored. Leave blank to keep it.")).toBeVisible();
   await page.reload();
   await expect(page.getByLabel("SSH private key")).toHaveValue("");

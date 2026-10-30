@@ -180,16 +180,6 @@ body {
   border-color: #f0d7d4;
   margin-bottom: 24px;
 }
-.signin {
-  min-height: 100dvh;
-  display: grid;
-  place-items: center;
-  padding: 24px;
-}
-.signin > * {
-  max-width: 410px;
-  width: 100%;
-}
 .attach-row {
   display: grid;
   grid-template-columns: 1fr 1fr 1fr auto;

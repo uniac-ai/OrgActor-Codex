@@ -6,8 +6,8 @@ import { getRequestListener } from "@hono/node-server";
 import { SessionMcpBridge } from "../actors/bridge.js";
 import { ActorSupervisor } from "../actors/supervisor.js";
 import { CodexBackend } from "../codex/index.js";
-import { OperatorAuth } from "../management/auth.js";
 import { management } from "../management/index.js";
+import { Fault, HubConfig } from "../management/schema.js";
 import { CodexProvider } from "../provider/index.js";
 import { RuntimeStore } from "../runtime/index.js";
 import { SetupService } from "../setup/index.js";
@@ -17,8 +17,24 @@ export async function startServer(options: {
   port?: number;
   hostname?: string;
   webRoot?: string;
+  hub?: HubConfig;
 }) {
   const store = new RuntimeStore(options.root);
+  if (options.hub) {
+    const hub = HubConfig.parse(options.hub);
+    const old = store.data.settings.hub;
+    if (JSON.stringify(hub) !== JSON.stringify(old)) {
+      if (Object.keys(store.data.actors).length || Object.keys(store.data.journal).length)
+        throw new Fault(
+          "EXECUTION_CONFIG_BOUND",
+          "Existing execution records are bound to the configured Hub.",
+        );
+      store.data.settings.hub = hub;
+      store.data.revision += 1;
+      store.data.probes = {};
+      store.save();
+    }
+  }
   const backend = new CodexBackend(store);
   const actors = new ActorSupervisor(store, () => setup.executionAdapter());
   const provider = new CodexProvider(
@@ -28,8 +44,7 @@ export async function startServer(options: {
   );
   const setup: SetupService = new SetupService(store, backend, provider);
   const bridge = new SessionMcpBridge(store, actors);
-  const auth = new OperatorAuth();
-  const app = management(store, setup, provider, actors, auth);
+  const app = management(store, setup, provider, actors);
   const webRoot = resolve(options.webRoot ?? "dist/web");
   app.get("/*", async (c) => {
     const pathname = new URL(c.req.url).pathname;
@@ -76,13 +91,13 @@ export async function startServer(options: {
     void listener(req, res);
   });
   server.requestTimeout = 90_000;
+  if (store.data.providerEnabled && store.data.settings.hub) await setup.probe("hub");
   server.listen(options.port ?? 8787, options.hostname ?? "127.0.0.1");
   await once(server, "listening");
   const address = server.address();
   if (!address || typeof address === "string") throw new Error("No TCP listener");
   const url = `http://${options.hostname ?? "127.0.0.1"}:${address.port}`;
   actors.recover();
-  if (store.data.providerEnabled) void provider.start();
   return {
     url,
     server,
@@ -92,7 +107,14 @@ export async function startServer(options: {
     provider,
     setup,
     bridge,
-    auth,
+    get ready() {
+      return (
+        server.listening &&
+        store.data.providerEnabled &&
+        !!store.data.settings.hub &&
+        !!provider.connection?.connected
+      );
+    },
     app,
     async close() {
       provider.close();

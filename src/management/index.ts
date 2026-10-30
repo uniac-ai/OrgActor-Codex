@@ -4,7 +4,6 @@ import type { ActorSupervisor } from "../actors/supervisor.js";
 import type { CodexProvider } from "../provider/index.js";
 import type { RuntimeStore } from "../runtime/index.js";
 import type { SetupService } from "../setup/index.js";
-import type { OperatorAuth } from "./auth.js";
 import {
   Attach,
   Authority,
@@ -21,14 +20,11 @@ export function management(
   setup: SetupService,
   provider: CodexProvider,
   actors: ActorSupervisor,
-  auth: OperatorAuth,
 ) {
   const app = new Hono();
   app.use("/api/*", async (c, next) => {
     c.header("Cache-Control", "no-store");
     c.header("X-Content-Type-Options", "nosniff");
-    if (c.req.path === "/api/session" && c.req.method === "POST") auth.origin(c);
-    else auth.verify(c);
     await next();
   });
   app.onError((e, c) =>
@@ -48,16 +44,6 @@ export function management(
       (e instanceof z.ZodError ? 422 : e instanceof Fault ? e.status : 500) as any,
     ),
   );
-  app.post("/api/session", async (c) =>
-    c.json(
-      auth.redeem(c, z.strictObject({ token: z.string().min(1) }).parse(await c.req.json()).token),
-    ),
-  );
-  app.get("/api/session", (c) => c.json(auth.read(c)));
-  app.delete("/api/session", (c) => {
-    auth.logout(c);
-    return c.json({ signedOut: true });
-  });
   app.get("/api/state", (c) => {
     const state: PublicState = {
       revision: store.data.revision,

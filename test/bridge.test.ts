@@ -141,5 +141,5 @@ test("multibyte unauthorized Bearer input returns 401 and the assembled server r
     request.on("error", reject);
   });
   assert.equal(status, 401);
-  assert.equal((await fetch(`${module.url}/api/state`)).status, 401);
+  assert.equal((await fetch(`${module.url}/api/state`)).status, 200);
 });

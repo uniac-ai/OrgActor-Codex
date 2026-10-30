@@ -19,18 +19,19 @@ export const Backend = z.discriminatedUnion("kind", [
     endpoint: z.string().regex(/^(unix:\/\/\/|wss?:\/\/)/),
   }),
 ]);
-export const Settings = z.strictObject({
+export const ConnectorSettings = z.strictObject({
   backend: Backend.optional(),
   workspaceRoot: z.string().startsWith("/").optional(),
   bridgeUrl: z.url().optional(),
-  hub: z
-    .strictObject({
-      url: z.url(),
-      providerId: z.string().min(1).max(64),
-      credential: z.string().min(1).optional(),
-    })
-    .optional(),
 });
+export const HubConfig = z.strictObject({
+  url: z.url(),
+  providerId: z.string().min(1).max(64),
+  credential: z.string().min(1).optional(),
+});
+export const Settings = ConnectorSettings.extend({ hub: HubConfig.optional() });
+export type ConnectorSettings = z.infer<typeof ConnectorSettings>;
+export type HubConfig = z.infer<typeof HubConfig>;
 export type Settings = z.infer<typeof Settings>;
 export type BackendConfig = z.infer<typeof Backend>;
 export type ExecutionConfig = z.infer<typeof ExecutionConfig>;
@@ -94,7 +95,14 @@ export interface PublicState {
   provider: {
     enabled: boolean;
     connected: boolean;
-    state: "connected" | "connecting" | "paused" | "suspended";
+    state:
+      | "connected"
+      | "connecting"
+      | "paused"
+      | "suspended"
+      | "unconfigured"
+      | "unreachable"
+      | "rejected";
     error?: string;
   };
   actors: ActorSnapshot[];

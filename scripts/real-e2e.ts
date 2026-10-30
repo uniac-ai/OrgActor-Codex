@@ -43,7 +43,11 @@ const hub = await startCore(database, {
 });
 const rootIdentity = await hub.organization.registry.createRoot();
 const root = new ActorHubSession(hub.url, []);
-const module = await startServer({ root: join(owned, "runtime"), port: 0 });
+const module = await startServer({
+  root: join(owned, "runtime"),
+  port: 0,
+  hub: { url: hub.url, providerId, credential: providerCredential },
+});
 let native: any;
 const threads = new Set<string>();
 const archived = new Set<string>();
@@ -74,6 +78,7 @@ async function quota() {
   };
 }
 try {
+  await module.provider.setEnabled(false);
   module.setup.configure({
     backend: localAdapter
       ? {
@@ -90,7 +95,6 @@ try {
         },
     workspaceRoot: sshRoot,
     bridgeUrl: `${module.url}/mcp`,
-    hub: { url: hub.url, providerId, credential: providerCredential },
   });
   native = await module.backend.get();
   native.protocol.watch((event: any) => {

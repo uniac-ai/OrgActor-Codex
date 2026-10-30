@@ -15,15 +15,9 @@ const empty: SetupForm = {
   endpoint: "",
   workspaceRoot: "",
   bridgeUrl: "",
-  hubUrl: "",
-  providerId: "",
-  credential: "",
 };
 export function ConsoleControl() {
-  const [signedIn, setSignedIn] = useState(false);
-  const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [token, setToken] = useState("");
   const [page, setPage] = useState<Page>("setup");
   const [state, setState] = useState<PublicState | null>(null);
   const [busy, setBusy] = useState(false);
@@ -37,36 +31,12 @@ export function ConsoleControl() {
   >(null);
   const [login, setLogin] = useState<{ loginId: string; authUrl: string } | null>(null);
   const refresh = useCallback(async () => setState(await client.state()), []);
-  const authenticate = useCallback(
-    async (value?: string) => {
-      setLoading(true);
-      setError(null);
-      try {
-        await client.session(value);
-        setSignedIn(true);
-        setToken("");
-        await refresh();
-      } catch (e) {
-        setSignedIn(false);
-        if (value) setError((e as Error).message);
-      } finally {
-        setLoading(false);
-      }
-    },
-    [refresh],
-  );
   useEffect(() => {
-    const match = new URLSearchParams(window.location.hash.slice(1)).get("sign-in");
-    if (match) history.replaceState(null, "", window.location.pathname);
-    void authenticate(match ?? undefined);
-  }, [authenticate]);
-  useEffect(() => {
-    if (!signedIn) return;
-    const timer = setInterval(() => {
-      void refresh().catch((e) => setError(e.message));
-    }, 2000);
+    const update = () => void refresh().catch((e) => setError(e.message));
+    update();
+    const timer = setInterval(update, 2000);
     return () => clearInterval(timer);
-  }, [signedIn, refresh]);
+  }, [refresh]);
   const formRevision = useRef<number | undefined>(undefined);
   useEffect(() => {
     if (!state || formRevision.current === state.revision) return;
@@ -82,8 +52,6 @@ export function ConsoleControl() {
       endpoint: b?.endpoint ?? "",
       workspaceRoot: s.workspaceRoot ?? "",
       bridgeUrl: s.bridgeUrl ?? `${location.origin}/mcp`,
-      hubUrl: s.hub?.url ?? "",
-      providerId: s.hub?.providerId ?? "",
     });
   }, [state]);
   const perform = async (work: () => Promise<unknown>) => {
@@ -99,16 +67,7 @@ export function ConsoleControl() {
       setBusy(false);
     }
   };
-  if (!signedIn || !state)
-    return (
-      <views.SignIn
-        loading={loading}
-        error={error}
-        token={token}
-        onToken={setToken}
-        onSignIn={() => void authenticate(token)}
-      />
-    );
+  if (!state) return <views.Loading error={error} />;
   const actor = state.actors.find((a) => a.actorId === selected);
   let content: ReactNode;
   if (page === "setup")
@@ -139,15 +98,8 @@ export function ConsoleControl() {
                   : { kind: "app-server", endpoint: form.endpoint },
               workspaceRoot: form.workspaceRoot || undefined,
               bridgeUrl: form.bridgeUrl || undefined,
-              hub: form.hubUrl
-                ? {
-                    url: form.hubUrl,
-                    providerId: form.providerId,
-                    ...(form.credential ? { credential: form.credential } : {}),
-                  }
-                : undefined,
             });
-            setForm((s) => ({ ...s, privateKey: "", knownHosts: "", credential: "" }));
+            setForm((s) => ({ ...s, privateKey: "", knownHosts: "" }));
           })
         }
         onProbe={(stage) => void perform(() => client.probe(stage))}
@@ -160,7 +112,9 @@ export function ConsoleControl() {
         busy={busy}
         onToggle={() =>
           void perform(() =>
-            client.provider(state.provider.state === "suspended" || !state.provider.enabled),
+            client.provider(
+              ["suspended", "rejected"].includes(state.provider.state) || !state.provider.enabled,
+            ),
           )
         }
         onProbe={() => void perform(() => client.probe("hub"))}
@@ -245,18 +199,7 @@ export function ConsoleControl() {
       />
     );
   return (
-    <views.Shell
-      page={page}
-      onPage={setPage}
-      error={error}
-      onLogout={() =>
-        void perform(async () => {
-          await client.logout();
-          setSignedIn(false);
-          setState(null);
-        })
-      }
-    >
+    <views.Shell page={page} onPage={setPage} error={error}>
       {content}
     </views.Shell>
   );

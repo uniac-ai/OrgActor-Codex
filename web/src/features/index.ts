@@ -11,23 +11,12 @@ export interface SetupForm {
   endpoint: string;
   workspaceRoot: string;
   bridgeUrl: string;
-  hubUrl: string;
-  providerId: string;
-  credential: string;
 }
 export interface ShellFeature {
   page: Page;
   onPage(page: Page): void;
-  onLogout(): void;
   error: string | null;
   children: ReactNode;
-}
-export interface SignInFeature {
-  loading: boolean;
-  error: string | null;
-  token: string;
-  onToken(value: string): void;
-  onSignIn(): void;
 }
 export interface SetupFeature {
   state: PublicState;
@@ -76,7 +65,7 @@ export interface ActorsFeature {
 }
 export interface ViewSet {
   Shell(props: ShellFeature): ReactNode;
-  SignIn(props: SignInFeature): ReactNode;
+  Loading(props: { error: string | null }): ReactNode;
   Setup(props: SetupFeature): ReactNode;
   Provider(props: ProviderFeature): ReactNode;
   Backend(props: BackendFeature): ReactNode;

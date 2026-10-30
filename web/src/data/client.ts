@@ -1,13 +1,15 @@
-import type { Probe, ProbeStage, PublicState, Settings } from "../../../src/management/schema";
+import type {
+  ConnectorSettings,
+  Probe,
+  ProbeStage,
+  PublicState,
+} from "../../../src/management/schema";
 export class ManagementClient {
-  csrf = "";
   async request<T>(path: string, method = "GET", body?: unknown): Promise<T> {
     const r = await fetch(`/api${path}`, {
       method,
-      credentials: "same-origin",
       headers: {
         ...(body === undefined ? {} : { "Content-Type": "application/json" }),
-        ...(this.csrf ? { "X-CSRF-Token": this.csrf } : {}),
       },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     });
@@ -15,21 +17,10 @@ export class ManagementClient {
     if (!r.ok) throw new Error(value.error?.message ?? "The console could not reach the server.");
     return value;
   }
-  async session(value?: string) {
-    const r = await this.request<{ csrf: string }>(
-      "/session",
-      value ? "POST" : "GET",
-      value ? { token: value } : undefined,
-    );
-    this.csrf = r.csrf;
-  }
-  logout() {
-    return this.request("/session", "DELETE");
-  }
   state() {
     return this.request<PublicState>("/state");
   }
-  setup(value: Settings) {
+  setup(value: ConnectorSettings) {
     return this.request("/setup", "PUT", value);
   }
   probe(stage: ProbeStage) {

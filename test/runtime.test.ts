@@ -17,6 +17,7 @@ function fixture(t: any) {
   const dir = mkdtempSync(join(tmpdir(), "orgactor-test-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const store = new RuntimeStore(dir);
+  store.data.providerEnabled = false;
   store.data.settings = {
     backend: { kind: "app-server", endpoint: "unix:///test.sock" },
     workspaceRoot: "/owned/workspace",
@@ -88,55 +89,15 @@ test("ambiguous native creation survives restart without replay", async (t) => {
   await assert.rejects(restarted.create(input), (e: any) => e.code === "PROVISIONING_UNKNOWN");
   assert.equal(starts, 1);
 });
-test("ManagementApi enforces one-time sign-in, CSRF, origin and write-only secrets", async (t) => {
+test("ManagementApi opens directly, validates mutations and keeps private material write-only", async (t) => {
   const store = fixture(t);
   const server = await startServer({ root: store.root, port: 0 });
   t.after(() => server.close());
-  assert.equal((await server.app.request("http://localhost/api/state")).status, 401);
-  const invitation = server.auth.issue();
-  const login = await server.app.request("http://localhost/api/session", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ token: invitation }),
-  });
-  assert.equal(login.status, 200);
-  const cookieHeader = login.headers.get("set-cookie");
-  assert.ok(cookieHeader);
-  const cookie = cookieHeader.split(";")[0];
-  assert.match(cookieHeader, /HttpOnly/);
-  assert.match(cookieHeader, /SameSite=Strict/);
-  const { csrf } = (await login.json()) as any;
-  assert.equal(
-    (
-      await server.app.request("http://localhost/api/session", {
-        method: "POST",
-        body: JSON.stringify({ token: invitation }),
-        headers: { "Content-Type": "application/json" },
-      })
-    ).status,
-    401,
-  );
-  const headers = { Cookie: cookie, "X-CSRF-Token": csrf, "Content-Type": "application/json" };
-  assert.equal(
-    (
-      await server.app.request("http://localhost/api/provider", {
-        method: "PUT",
-        body: JSON.stringify({ enabled: false }),
-        headers: { Cookie: cookie, "Content-Type": "application/json" },
-      })
-    ).status,
-    403,
-  );
-  assert.equal(
-    (
-      await server.app.request("http://localhost/api/provider", {
-        method: "PUT",
-        body: JSON.stringify({ enabled: false }),
-        headers: { ...headers, Origin: "https://foreign.example" },
-      })
-    ).status,
-    403,
-  );
+  const initial = await fetch(`${server.url}/api/state`);
+  assert.equal(initial.status, 200);
+  assert.equal(initial.headers.get("set-cookie"), null);
+  assert.equal(initial.headers.get("cache-control"), "no-store");
+  const headers = { "Content-Type": "application/json" };
   const settings = {
     backend: {
       kind: "ssh",
@@ -146,25 +107,40 @@ test("ManagementApi enforces one-time sign-in, CSRF, origin and write-only secre
       privateKey: "KEY_SENTINEL",
       knownHosts: "HOST_SENTINEL",
     },
-    hub: { url: "http://127.0.0.1:8740", providerId: "provider", credential: "PROVIDER_SENTINEL" },
   };
+  const save = await fetch(`${server.url}/api/setup`, {
+    method: "PUT",
+    headers,
+    body: JSON.stringify(settings),
+  });
+  assert.equal(save.status, 200);
+  const overwrite = await fetch(`${server.url}/api/setup`, {
+    method: "PUT",
+    headers,
+    body: JSON.stringify({ ...settings, hub: { url: "http://other", providerId: "browser" } }),
+  });
+  assert.equal(overwrite.status, 422);
+  const state = await (await fetch(`${server.url}/api/state`)).text();
+  for (const secret of ["KEY_SENTINEL", "HOST_SENTINEL", "PROVIDER_SENTINEL"])
+    assert.ok(!state.includes(secret));
+  assert.match(state, /credentialPresent/);
+  assert.equal(server.store.data.settings.hub?.providerId, "provider");
+  assert.match(readFileSync(store.file, "utf8"), /PROVIDER_SENTINEL/);
+  assert.equal(statSync(store.file).mode & 0o777, 0o600);
+  assert.equal(statSync(store.root).mode & 0o777, 0o700);
   assert.equal(
     (
-      await server.app.request("http://localhost/api/setup", {
+      await fetch(`${server.url}/api/provider`, {
         method: "PUT",
         headers,
-        body: JSON.stringify(settings),
+        body: JSON.stringify({ enabled: false }),
       })
     ).status,
     200,
   );
-  const state = await (await server.app.request("http://localhost/api/state", { headers })).text();
-  for (const secret of ["KEY_SENTINEL", "HOST_SENTINEL", "PROVIDER_SENTINEL"])
-    assert.ok(!state.includes(secret));
-  assert.match(readFileSync(store.file, "utf8"), /PROVIDER_SENTINEL/);
   assert.equal(
     (
-      await server.app.request("http://localhost/api/actors", {
+      await fetch(`${server.url}/api/actors`, {
         method: "POST",
         headers,
         body: JSON.stringify({ actorId: "actor" }),
@@ -178,7 +154,8 @@ test("settings cannot switch any bound execution target, including paused bindin
   const setup = new SetupService(store, { close() {} } as any);
   store.data.journal.old = { fingerprint: "accepted", state: "unknown" };
   assert.throws(
-    () => setup.configure({ ...store.data.settings, bridgeUrl: "http://another/mcp" }),
+    () =>
+      setup.configure({ backend: store.data.settings.backend, bridgeUrl: "http://another/mcp" }),
     (e: any) => e.code === "EXECUTION_CONFIG_BOUND",
   );
 });

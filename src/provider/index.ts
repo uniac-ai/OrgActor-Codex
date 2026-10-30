@@ -21,13 +21,19 @@ export class CodexProvider {
     return {
       enabled: this.store.data.providerEnabled,
       connected: this.connection?.connected ?? false,
-      state: this.store.data.providerSuspended
-        ? ("suspended" as const)
-        : this.connection?.connected
-          ? ("connected" as const)
-          : this.store.data.providerEnabled
-            ? ("connecting" as const)
-            : ("paused" as const),
+      state: !this.store.data.settings.hub
+        ? ("unconfigured" as const)
+        : this.store.data.providerSuspended === "admission-rejected"
+          ? ("rejected" as const)
+          : this.store.data.providerSuspended
+            ? ("suspended" as const)
+            : this.connection?.connected
+              ? ("connected" as const)
+              : this.store.data.providerEnabled
+                ? this.error
+                  ? ("unreachable" as const)
+                  : ("connecting" as const)
+                : ("paused" as const),
       ...(this.error ? { error: this.error } : {}),
     };
   }

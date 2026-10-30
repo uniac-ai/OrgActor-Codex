@@ -1,6 +1,6 @@
 import { z } from "zod";
 import type { AppServerAdapter, CodexAdapter, CodexBackend } from "../codex/index.js";
-import { Fault, type Probe, type ProbeStage, Settings } from "../management/schema.js";
+import { ConnectorSettings, Fault, type Probe, type ProbeStage } from "../management/schema.js";
 import type { CodexProvider } from "../provider/index.js";
 import { hash, type RuntimeStore, token } from "../runtime/index.js";
 
@@ -60,19 +60,12 @@ export class SetupService {
         "LOGIN_IN_PROGRESS",
         "Finish or cancel the owned Codex sign-in before changing settings.",
       );
-    const next = Settings.parse(raw);
     const old = this.store.data.settings;
+    const next = { ...ConnectorSettings.parse(raw), ...(old.hub ? { hub: old.hub } : {}) };
     if (next.backend?.kind === "ssh" && old.backend?.kind === "ssh") {
       next.backend.privateKey ??= old.backend.privateKey;
       next.backend.knownHosts ??= old.backend.knownHosts;
     }
-    if (
-      next.hub &&
-      old.hub &&
-      next.hub.providerId === old.hub.providerId &&
-      next.hub.url === old.hub.url
-    )
-      next.hub.credential ??= old.hub.credential;
     if (
       (Object.keys(this.store.data.journal).length || Object.keys(this.store.data.actors).length) &&
       JSON.stringify(next) !== JSON.stringify(old)
@@ -82,7 +75,7 @@ export class SetupService {
         "Existing execution records are bound to these settings. Resolve or remove their native execution before switching backend, workspace, bridge or Hub settings.",
       );
     if (
-      this.store.data.providerEnabled ||
+      (this.store.data.providerEnabled && !!old.hub) ||
       Object.values(this.store.data.actors).some((a) => a.enabled)
     )
       throw new Fault(
@@ -152,7 +145,9 @@ export class SetupService {
       const admitted = await this.provider?.probeAdmission();
       return admitted
         ? { state: "ready", code: "PROVIDER_ADMITTED" }
-        : { state: "unreachable", code: "PROVIDER_NOT_ADMITTED" };
+        : this.provider?.snapshot().state === "rejected"
+          ? { state: "rejected", code: "HUB_REJECTED" }
+          : { state: "unreachable", code: "PROVIDER_NOT_ADMITTED" };
     }
     const adapter = await this.backend.get();
     if (stage === "backend") return { state: "ready", code: "APP_SERVER_INITIALIZED" };

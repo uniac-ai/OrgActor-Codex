@@ -95,7 +95,7 @@ export class RuntimeStore {
           revision: 0,
           settings: {},
           probes: {},
-          providerEnabled: false,
+          providerEnabled: true,
           actors: {},
           journal: {},
           issuedCredentials: {},
