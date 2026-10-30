@@ -27,6 +27,8 @@ export interface Submission {
   turnId?: string;
   cancelRequested?: boolean;
   kind?: "run" | "steer";
+  applied?: boolean;
+  failure?: { code: string; message: string; status: number };
   result?: {
     inputId: string;
     turnId: string;

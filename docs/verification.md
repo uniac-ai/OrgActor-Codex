@@ -1,6 +1,6 @@
 # Verification
 
-The local candidate passes clean installation, format/lint, build and 28 regression tests on Node 22.22.0 and 24.22.1. Seven browser tests exercise the assembled HTTP console, authentication, write-only setup, factual readiness, Actor controls, terminal controls and mobile navigation. Browser captures reset scroll and check sidebar geometry and unreachable vertical clipping.
+The local candidate passes clean installation, format/lint, build and 30 regression tests on Node 22.22.0 and 24.22.1. The final steering regressions cover durable refusal/retry and require native input-ID correlation before uncertain steering can complete. Seven browser tests exercise the assembled HTTP console, authentication, write-only setup, factual readiness, Actor controls, terminal controls and mobile navigation. Browser captures reset scroll and check sidebar geometry and unreachable vertical clipping.
 
 The final live runs tested source checkpoint `948a58ce4215d9c606f629d7f5cd119e41cacb06`. The SSH run completed on 2026-10-30 with two actual native Hub MCP calls, `ORGACTOR_MCP_OK`, native-applied `STEER_APPLIED`, a separate interrupted command and no duplicated inputs after reconnect. Included plan usage was allowed before and after; its reported primary window remained at 26%. The [native report](../evidence/native-e2e.json), [co-located setup report](../evidence/colocated-setup.json), [supported app observation](../evidence/desktop-app-observation.json) and [cleanup manifest](../evidence/cleanup-manifest.json) contain the sanitized observations.
 

@@ -5,8 +5,10 @@ import { join } from "node:path";
 import test from "node:test";
 import { ActorController } from "../src/actors/controller.js";
 import { responseFor } from "../src/actors/requests.js";
+import { AppServerAdapter } from "../src/codex/index.js";
 import { Fault } from "../src/management/schema.js";
 import { type Bootstrap, RuntimeStore } from "../src/runtime/index.js";
+import { SetupService } from "../src/setup/index.js";
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -190,6 +192,105 @@ test("steered Hub inputs retain provenance; mixed native-applied inputs do not g
     item: { type: "userMessage", clientId: "call-steer" },
   });
   assert.equal(f.actor.currentCause(), null);
+  f.event("turn/completed", { turn: { id: "turn-owned", status: "completed", items: [] } });
+  assert.equal(f.bootstrap.submissions[1].result?.status, "completed");
+  assert.equal(
+    (await f.actor.steer("call-steer", "turn-owned", "second", "manager")).status,
+    "accepted",
+  );
+});
+test("refused steering stays failed after the original turn completes and retries retain the error", async (t) => {
+  for (const code of ["EXECUTION_NOT_ADMITTED", "NATIVE_REJECTED", "BACKEND_UNREACHABLE"]) {
+    const f = fixture(t);
+    let nativeSteers = 0;
+    if (code === "EXECUTION_NOT_ADMITTED") {
+      const native = new AppServerAdapter({
+        request: async (method: string) => {
+          if (method === "account/read") return { account: { type: "apiKey" } };
+          if (method === "turn/steer") nativeSteers++;
+          throw new Error("Unexpected native call");
+        },
+      } as any);
+      const setup = new SetupService(f.store, { get: async () => native } as any);
+      f.actor.adapter = await setup.executionAdapter();
+    } else {
+      f.adapter.steer = async () => {
+        nativeSteers++;
+        throw new Fault(code, "Refused", 422);
+      };
+    }
+    f.event("turn/started", { turn: { id: "original" } });
+    const retry = (actor = f.actor) =>
+      assert.rejects(
+        actor.steer("denied", "original", "second"),
+        (error: any) => error.code === code && error.status === 422,
+      );
+    await retry();
+    await retry();
+    const denied = f.bootstrap.submissions[0];
+    assert.equal(denied.state, "done");
+    assert.equal(denied.result?.status, "failed");
+    f.event("turn/completed", {
+      turn: {
+        id: "original",
+        status: "completed",
+        items: [{ type: "userMessage", clientId: "original-input" }],
+      },
+    });
+    assert.equal(denied.result?.status, "failed");
+    await retry();
+    const restored = new RuntimeStore(f.store.root);
+    const recovered = new ActorController(
+      restored.data.actors.actor,
+      restored,
+      async () => f.adapter as any,
+    );
+    await retry(recovered);
+    assert.equal(restored.data.actors.actor.submissions[0].failure?.code, code);
+    assert.equal(nativeSteers, code === "EXECUTION_NOT_ADMITTED" ? 0 : 1);
+  }
+});
+test("ambiguous steering completes only after its native client ID is observed, including recovery", async (t) => {
+  const f = fixture(t);
+  let nativeSteers = 0;
+  f.adapter.steer = async () => {
+    nativeSteers++;
+    throw new Fault("NATIVE_UNKNOWN", "Lost reply");
+  };
+  f.event("turn/started", { turn: { id: "original" } });
+  assert.equal((await f.actor.steer("uncertain", "original", "second")).status, "unknown");
+  const uncertain = f.bootstrap.submissions[0];
+  const original = {
+    id: "original",
+    status: "completed",
+    items: [{ type: "userMessage", clientId: "original-input" }],
+  };
+  f.event("turn/completed", { turn: original });
+  assert.equal(uncertain.result, undefined);
+  assert.equal((await f.actor.steer("uncertain", "original", "second")).status, "unknown");
+  f.history([original]);
+  await f.actor.reconcile();
+  assert.equal(uncertain.state, "unknown");
+  assert.equal(uncertain.result, undefined);
+  const restored = new RuntimeStore(f.store.root);
+  const recovered = new ActorController(
+    restored.data.actors.actor,
+    restored,
+    async () => f.adapter as any,
+  );
+  recovered.adapter = f.adapter as any;
+  await recovered.reconcile();
+  assert.equal(restored.data.actors.actor.submissions[0].result, undefined);
+  f.history([
+    { ...original, items: [...original.items, { type: "userMessage", clientId: "uncertain" }] },
+  ]);
+  await recovered.reconcile();
+  assert.equal(
+    new RuntimeStore(f.store.root).data.actors.actor.submissions[0].result?.status,
+    "completed",
+  );
+  assert.equal((await recovered.steer("uncertain", "original", "second")).status, "accepted");
+  assert.equal(nativeSteers, 1);
 });
 test("unread backlog drains past 200; restart after durable acceptance before acknowledgement duplicates none", async (t) => {
   const f = fixture(t);

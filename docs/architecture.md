@@ -21,6 +21,8 @@ An Actor advertises the following local interfaces with JSON object input/output
 
 All operations receive `Incoming {id,from,cause,signal}` from Hub `_meta["agentorg/call"]`. Mutation authority is checked against the authenticated Hub caller and the current root/manager relationship, never text claiming to be the user. Missing delivery metadata is rejected. Provenance survives queuing, steering, MCP cause propagation and restart. Task cancellation removes queued work or interrupts only the turn belonging to that call. Caller wait expiry does not cancel execution.
 
+An explicit steering refusal is a durable failed input; retrying its identity returns the same typed error, including after the target turn completes or the executor restarts. Steering completes only after its own native user-message client ID is observed. A shared target turn ID alone cannot settle an uncertain steering input during completion or recovery.
+
 ## ManagementApi
 
 Runtime Zod schemas are shared with the inferred browser types. `/api/session` supports redeem/read/logout. `/api/state` returns sanitized settings, configuration revision, setup reports, Provider observation and Actor snapshots. `/api/setup` accepts backend/bridge/Hub settings; `/api/setup/probes/:stage` runs backend/account/desktop/bridge/Hub checks. `/api/setup/login` explicitly starts/cancels one native login owned by SetupService. `/api/provider` sets enabled intent. `/api/actors` attaches an existing Hub Actor using private bootstrap; it never creates Hub identity. Actor-scoped endpoints submit input, steer, interrupt, list/terminate native background terminals and respond to scoped pending requests. Errors use stable codes and sanitized messages.
