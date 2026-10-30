@@ -1,0 +1,84 @@
+{
+  "threadId": "01a18dd1-d80f-78d0-8a28-079ca93da3f2",
+  "title": "OrgActor-Codex E2E act_fdfdafa3f2",
+  "observedAt": "2026-10-30T17:19:30.545Z",
+  "catalogObserved": true,
+  "catalogTitle": "OrgActor-Codex E2E act_fdfdafa3f2",
+  "nativeAppHistoryObserved": true,
+  "status": "idle",
+  "renderedPixels": "unverified",
+  "turns": [
+    {
+      "id": "01a18dd2-4260-7b32-aed0-210229bac827",
+      "status": "interrupted",
+      "items": [
+        {
+          "type": "userMessage"
+        },
+        {
+          "type": "agentMessage",
+          "text": "I’ll run the command and wait for it to finish."
+        },
+        {
+          "type": "commandExecution",
+          "status": "failed",
+          "exitCode": -1
+        }
+      ]
+    },
+    {
+      "id": "01a18dd1-fc64-78b2-962f-504836b6f96d",
+      "status": "completed",
+      "items": [
+        {
+          "type": "userMessage"
+        },
+        {
+          "type": "agentMessage",
+          "text": "I’ll run the command and wait for it to finish."
+        },
+        {
+          "type": "userMessage"
+        },
+        {
+          "type": "commandExecution",
+          "status": "completed",
+          "exitCode": 0
+        },
+        {
+          "type": "agentMessage",
+          "text": "STEER_APPLIED"
+        }
+      ]
+    },
+    {
+      "id": "01a18dd1-daa4-7563-966e-09014ff22cff",
+      "status": "completed",
+      "items": [
+        {
+          "type": "userMessage"
+        },
+        {
+          "type": "agentMessage",
+          "text": "I’ll call the org team and activity tools once each."
+        },
+        {
+          "type": "mcpToolCall",
+          "server": "org",
+          "tool": "team",
+          "status": "completed"
+        },
+        {
+          "type": "mcpToolCall",
+          "server": "org",
+          "tool": "activity",
+          "status": "completed"
+        },
+        {
+          "type": "agentMessage",
+          "text": "ORGACTOR_MCP_OK"
+        }
+      ]
+    }
+  ]
+}
