@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
+import { get } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -112,4 +113,33 @@ test("native HTTP MCP receives schema-valid Actor creation without structured/te
     /recorded human-answer authority/,
   );
   assert.equal(calls, 1);
+});
+
+test("multibyte unauthorized Bearer input returns 401 and the assembled server remains alive", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "orgactor-unicode-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const module = await startServer({ root: dir, port: 0 });
+  t.after(() => module.close());
+  module.store.data.actors.actor = {
+    actorId: "actor",
+    hubUrl: "http://hub",
+    config: { approvalAuthority: "desktop" },
+    threadId: "thread",
+    bridgeToken: "a".repeat(43),
+    enabled: true,
+    submissions: [],
+  };
+  const status = await new Promise<number | undefined>((resolve, reject) => {
+    const request = get(
+      `${module.url}/mcp`,
+      { headers: { Authorization: `Bearer ${"é".repeat(43)}` } },
+      (response) => {
+        response.resume();
+        response.once("end", () => resolve(response.statusCode));
+      },
+    );
+    request.on("error", reject);
+  });
+  assert.equal(status, 401);
+  assert.equal((await fetch(`${module.url}/api/state`)).status, 401);
 });

@@ -4,7 +4,7 @@
 
 One server/container serves an authenticated Managing Console and ManagementApi. The browser uses only the typed ManagementApi client. Operator sign-in redeems a one-time token into an HttpOnly, SameSite=Strict cookie; same-origin checks and CSRF protect mutations. Secrets are write-only; reads return presence and fingerprints. Runtime files have mode 0600 inside a 0700 directory.
 
-The implementation consumes the Hub contracts reviewed at AgentOrg PR 52 (`3f39ac7f07bfc7f1dd7e2568b902e41ea0331fc6`) and PR 53 (`6b5504cec47a5d2c5d7a98f0e156375b0d46172d`). Provider and Actor initiate independent `/connection` WebSockets. Admission is JSON-RPC 2.0 `connection.connect({providerId,credential?})` or `{actorId,credential?}` and returns `{connectionId}`. Identities already exist in the Hub. Actor connections initialize bidirectional MCP after admission. Provider connections implement `provider.describe({}) -> {configSchema}` and `provider.createActor({actorId,credential?,config}) -> {actorId}`. No additional handshake fields or Provider routing are used.
+The implementation consumes the Hub contracts reviewed at AgentOrg PR 52 (`3f39ac7f07bfc7f1dd7e2568b902e41ea0331fc6`) and PR 53 (`58dbececc84289f378f658b35504371106a7c760`). Provider and Actor initiate independent `/connection` WebSockets. Admission is JSON-RPC 2.0 `connection.connect({providerId,credential?})` or `{actorId,credential?}` and returns `{connectionId}`. Identities already exist in the Hub. Actor connections initialize bidirectional MCP after admission. Provider connections implement `provider.describe({}) -> {configSchema}` and `provider.createActor({actorId,credential?,config}) -> {actorId}`. No additional handshake fields or Provider routing are used. Activity is an ordinary Tool for every open Actor; discovery follows the actual catalog without a fixed Tool count.
 
 Hub owns organizational identity, state, management relationships and authority. Provider owns execution. The private `(hub URL, providerId, actorId) -> native threadId` journal is recovery policy, not a Hub lifetime binding. Creation persists accepted inputs before native effects. Identical retries reconcile; different inputs return CREATION_CONFLICT. Lost replies leave PROVISIONING_UNKNOWN without automatic native creation replay. Provisioning success requires actual native session setup, accepted per-thread bridge configuration and durable private bootstrap handoff. Actor admission, turn-triggered MCP startup and model activity are independent observations, not creation prerequisites. Hub's combined 45-second creation budget does not cancel or replay accepted work.
 
@@ -43,9 +43,45 @@ Readiness is `unconfigured`, `unreachable`, `rejected` or `ready` from explicit 
 
 Modules depend on the clients of their dependencies. CodexActor has no Provider dependency. Setup/auth/root alignment never enters ActorController or CodexProvider's execution adapter. Both SSH and co-located app-server adapters are supported, with SSH first in container setup. SSH uses strict host verification and `codex app-server proxy`; co-located mode connects an existing Unix/WebSocket app-server listener. Neither path uses `codex exec`.
 
+SetupService exposes a guarded execution client at composition. Each start/steer reads the live backend account, confirms included plan usage, and verifies the thread's OpenAI provider before forwarding to the pure adapter. API-key, missing, unknown and unavailable account/quota observations refuse model work. A previous successful setup probe grants no continuing admission. Managed sessions pin `modelProvider=openai`, disable model-provider fallback, and set per-thread `forced_login_method=chatgpt`, the documented [native authentication restriction](https://learn.chatgpt.com/docs/config-file/config-reference). Login remains a single explicitly started SetupService operation.
+
+The dependency graph uses module clients; the dotted edge is the launcher trigger bound by Server:
+
+```mermaid
+flowchart TD
+  Control[Console Control] --> Definition[Feature definitions]
+  View[shadcn Views] --> Definition
+  Control --> Api[ManagementApi client]
+  Api --> Setup[SetupService]
+  Api --> Supervisor[ActorSupervisor]
+  Api --> Provider[CodexProvider]
+  Setup --> Provider
+  Setup --> Backend[Codex backend client]
+  Setup --> Guard[Guarded execution client]
+  Supervisor --> Actor[CodexActor / ActorController]
+  Actor --> Guard
+  Provider --> Guard
+  Guard --> Adapter[Pure CodexAdapter]
+  Adapter --> Native[Codex app-server]
+  Provider -. ActorLauncher .-> Supervisor
+  Provider --> HubConnection
+  Actor --> ActorHub[ActorHubSession]
+  Bridge[SessionMcpBridge] --> ActorHub
+  ActorHub --> HubConnection
+  HubConnection --> Hub[AgentOrg Hub]
+  Setup --> Store[RuntimeStore]
+  Provider --> Store
+  Actor --> Store
+  Bridge --> Store
+```
+
 SessionMcpBridge uses an independent Actor-scoped capability and never sends a Hub credential to Codex. It validates Hub `agentorg/tool` metadata and forwards only the Actor's offered interfaces. Known credential-bearing `actor_create` results are projected using their actual structured contract, storing credentials privately and regenerating model-visible text. It does not heuristically scrub arbitrary valid results. Listing and invocation preserve aliases, tool identity, schemas and per-input cause. Model-provided metadata cannot impersonate another thread or input.
 
 Desktop-observe is the conservative default: it never starts login or answers native approval/input requests. SetupService starts login only on an explicit operator action. Hub-governed approval uses a pending request bound to thread, turn, request ID and authorized answerer. One timeout owner controls each request; stale/resolved responses are rejected. Operator attachment does not imply organizational root identity.
+
+Hub-governed requests ask the current manager with that manager as the designated answerer. The durable binding includes exact reviewed scope and native IDs. Permission questions show the requested filesystem paths, network scope and reason; grants use that same scope for the current turn. A lost question-creation reply is reconciled against matching authenticated Hub questions before any answer is applied. No match or multiple matches remain uncertain and issue no duplicate question. Native request expiry/resolution owns cancellation. Replaced/revoked connections stop autonomous retries and require explicit resume.
+
+Management snapshots distinguish unavailable native observation from an observed idle session. Pausing an Actor connection disconnects observation/Hub delivery and preserves native execution; interrupt and registered-terminal termination remain separate, scoped operations. Native user-message client IDs correlate recovery; text markers confer no identity. A mixed or unattributed input context carries no guessed Hub cause.
 
 ## Verification
 

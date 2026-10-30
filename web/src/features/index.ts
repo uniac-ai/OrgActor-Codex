@@ -43,7 +43,7 @@ export interface SetupFeature {
 export interface ProviderFeature {
   state: PublicState;
   busy: boolean;
-  onEnabled(enabled: boolean): void;
+  onToggle(): void;
   onProbe(): void;
 }
 export interface BackendFeature {
@@ -67,7 +67,7 @@ export interface ActorsFeature {
   onSubmit(): void;
   onSteer(): void;
   onInterrupt(): void;
-  onEnabled(id: string, enabled: boolean): void;
+  onToggleConnection(id: string): void;
   onAuthority(id: string, value: "desktop" | "hub"): void;
   onTerminals(): void;
   terminals: { processId: string; command: string; cwd: string }[] | null;

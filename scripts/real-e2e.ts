@@ -7,11 +7,14 @@ import { ActorHubSession } from "../src/hub/actor.js";
 import { CodexProvider } from "../src/provider/index.js";
 import { hash, token } from "../src/runtime/index.js";
 import { startServer } from "../src/server/index.js";
+import { cleanupOwned } from "./cleanup.js";
 
 // This opt-in test uses existing ChatGPT authentication; it never reads authentication tokens.
 const hubRoot = resolve(process.env.HUB_ROOT ?? ".e2e/hub");
 const sshRoot = process.env.CODEX_SSH_PROOF_ROOT;
 assert.ok(sshRoot, "Set CODEX_SSH_PROOF_ROOT to the authorized SSH backend proof directory");
+const sshSeed = JSON.parse(readFileSync(join(sshRoot, "phase1-seed.json"), "utf8"));
+const localAdapter = process.argv.includes("--adapter=local");
 const setupOnly = process.argv.includes("--setup-only");
 const retainProof = process.argv.includes("--retain-proof");
 mkdirSync(".e2e", { recursive: true });
@@ -43,6 +46,8 @@ const root = new ActorHubSession(hub.url, []);
 const module = await startServer({ root: join(owned, "runtime"), port: 0 });
 let native: any;
 const threads = new Set<string>();
+const archived = new Set<string>();
+const startedCommands = new Set<string>();
 async function until<T>(
   label: string,
   fn: () => Promise<T> | T,
@@ -70,19 +75,32 @@ async function quota() {
 }
 try {
   module.setup.configure({
-    backend: {
-      kind: "ssh",
-      host: "127.0.0.1",
-      port: 58509,
-      user: "andrewshi",
-      privateKey: readFileSync(join(sshRoot, "keys/client"), "utf8"),
-      knownHosts: readFileSync(join(sshRoot, "keys/known_hosts"), "utf8"),
-    },
+    backend: localAdapter
+      ? {
+          kind: "app-server",
+          endpoint: `unix://${join(sshRoot, "codex/app-server-control/app-server-control.sock")}`,
+        }
+      : {
+          kind: "ssh",
+          host: "127.0.0.1",
+          port: sshSeed.port,
+          user: sshSeed.user,
+          privateKey: readFileSync(join(sshRoot, "keys/client"), "utf8"),
+          knownHosts: readFileSync(join(sshRoot, "keys/known_hosts"), "utf8"),
+        },
     workspaceRoot: sshRoot,
     bridgeUrl: `${module.url}/mcp`,
     hub: { url: hub.url, providerId, credential: providerCredential },
   });
   native = await module.backend.get();
+  native.protocol.watch((event: any) => {
+    if (
+      event.params.threadId === evidence.actor?.threadId &&
+      event.method === "item/started" &&
+      event.params.item?.type === "commandExecution"
+    )
+      startedCommands.add(event.params.turnId);
+  });
   evidence.before = { loadedThreadIds: await inventory(), quota: await quota() };
   assert.equal(evidence.before.quota.ordinaryUsageAllowed, true);
   save();
@@ -112,6 +130,7 @@ try {
   offlineBootstrap.enabled = false;
   module.store.save();
   await native.protocol.request("thread/archive", { threadId: offlineBootstrap.threadId });
+  archived.add(offlineBootstrap.threadId);
   await root.open(rootIdentity.root.id, rootIdentity.credential);
   await module.provider.setEnabled(true);
   await until("Provider admission", () => module.provider.snapshot().connected);
@@ -167,7 +186,8 @@ try {
     save();
     return native.bridgeReady(bootstrap.threadId);
   });
-  const actorTools = await actor!.hub!.refreshTools();
+  assert.ok(actor?.hub);
+  const actorTools = await actor.hub.refreshTools();
   evidence.actorCatalog = actorTools.map((t) => ({
     call: t.name,
     metadata: t._meta?.["agentorg/tool"],
@@ -194,7 +214,7 @@ try {
       );
     await until(
       "Native model output",
-      () => actor!.snapshot().output,
+      () => actor.snapshot().output,
       (text) => text.includes("ORGACTOR_MCP_OK"),
     );
     assert.ok(
@@ -208,18 +228,14 @@ try {
         bootstrap.submissions.find((s) => s.id === receipt)?.result?.status ?? "completed",
     };
     save();
-    actor!.enqueue(
+    actor.enqueue(
       `control-${randomUUID()}`,
       "Run exactly one command: python3 -c 'import time; time.sleep(8)'. After it returns reply CONTROL_DONE. Do not modify files.",
     );
-    const turnId = await until("Control turn", () => actor!.turnId);
-    await until("Control command started", async () =>
-      (await native.read(bootstrap.threadId)).thread.turns
-        .find((t: any) => t.id === turnId)
-        ?.items.some((i: any) => i.type === "commandExecution" && i.status === "inProgress"),
-    );
+    const turnId = await until("Control turn", () => actor.turnId);
+    await until("Control command started", () => startedCommands.has(turnId as string));
     const steerId = `steer-${randomUUID()}`;
-    const steering = await actor!.steer(
+    const steering = await actor.steer(
       steerId,
       turnId as string,
       "After the wait reply STEER_APPLIED instead. Do not run any other command.",
@@ -235,21 +251,17 @@ try {
     assert.ok(
       steered.items.some((i: any) => i.type === "agentMessage" && i.text.includes("STEER_APPLIED")),
     );
-    actor!.enqueue(
+    actor.enqueue(
       `interrupt-${randomUUID()}`,
       "Run exactly one command: python3 -c 'import time; time.sleep(20)'. After it returns reply INTERRUPT_NOT_APPLIED. Do not modify files.",
     );
     const interruptTurnId = await until(
       "Interrupt turn",
-      () => actor!.turnId,
+      () => actor.turnId,
       (id) => !!id && id !== turnId,
     );
-    await until("Interrupt command started", async () =>
-      (await native.read(bootstrap.threadId)).thread.turns
-        .find((t: any) => t.id === interruptTurnId)
-        ?.items.some((i: any) => i.type === "commandExecution" && i.status === "inProgress"),
-    );
-    await actor!.interrupt(interruptTurnId as string);
+    await until("Interrupt command started", () => startedCommands.has(interruptTurnId as string));
+    await actor.interrupt(interruptTurnId as string);
     await until(
       "Native interrupted status",
       async () =>
@@ -292,35 +304,27 @@ try {
   process.exitCode = 1;
 } finally {
   if (native) {
-    for (const threadId of threads) {
-      try {
-        if (!(await inventory()).includes(threadId)) continue;
-        const read = await native.read(threadId);
-        const active = read.thread.turns?.find((t: any) => t.status === "inProgress");
-        if (active) {
-          await native.interrupt(threadId, active.id);
-          await until(
-            "Cleanup interrupted turn",
-            async () =>
-              (await native.read(threadId)).thread.turns?.find((t: any) => t.id === active.id)
-                ?.status,
-            (s) => s !== "inProgress",
-          );
-        }
-        for (const terminal of await native.terminals(threadId))
-          await native.terminate(threadId, terminal.processId);
-        assert.deepEqual(await native.terminals(threadId), []);
-        if (retainProof && evidence.success && !setupOnly && threadId === evidence.actor?.threadId)
-          evidence.retainedProof = {
-            threadId,
-            reason:
-              "One idle proof session retained for manager review; no active turn or background terminal.",
-          };
-        else await native.protocol.request("thread/archive", { threadId });
-      } catch {
-        evidence.cleanupIncomplete = true;
-      }
-    }
+    const retained =
+      retainProof && evidence.success && !setupOnly ? evidence.actor?.threadId : undefined;
+    evidence.cleanup = await cleanupOwned(
+      {
+        loaded: inventory,
+        read: (id) => native.read(id),
+        interrupt: (id, turn) => native.interrupt(id, turn),
+        terminals: (id) => native.terminals(id),
+        terminate: (id, process) => native.terminate(id, process),
+        archive: (id) => native.protocol.request("thread/archive", { threadId: id }),
+      },
+      threads,
+      { archived, retained },
+    );
+    if (evidence.cleanup.retained.length)
+      evidence.retainedProof = {
+        threadId: retained,
+        reason:
+          "One idle proof session retained for manager review; no active turn or background terminal.",
+      };
+    if (!evidence.cleanup.success) evidence.cleanupIncomplete = true;
     try {
       evidence.after = { loadedThreadIds: await inventory(), quota: await quota() };
       evidence.ownedThreadsStillLoaded = evidence.after.loadedThreadIds.filter((id: string) =>
@@ -334,6 +338,20 @@ try {
   await module.close();
   await hub.close();
   database.close();
+  const unknown = Object.values(module.store.data.journal).filter(
+    (j) => j.state === "unknown" || j.state === "creating",
+  );
+  if (unknown.length) {
+    evidence.unresolvedProvisioning = unknown.map((j) => ({
+      state: j.state,
+      threadId: j.threadId ?? null,
+    }));
+    evidence.cleanupIncomplete = true;
+  }
+  if (evidence.cleanupIncomplete) {
+    evidence.success = false;
+    process.exitCode = 1;
+  }
   evidence.finishedAt = new Date().toISOString();
   save();
   console.log(

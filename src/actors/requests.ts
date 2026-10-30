@@ -9,6 +9,24 @@ export const supportedRequests = new Set([
   "item/tool/requestUserInput",
   "mcpServer/elicitation/request",
 ]);
+export function requestedPermissions(params: any): object {
+  return {
+    ...(params.permissions?.network ? { network: params.permissions.network } : {}),
+    ...(params.permissions?.fileSystem ? { fileSystem: params.permissions.fileSystem } : {}),
+  };
+}
+export function requestReview(method: string, params: any): string {
+  const reason = typeof params.reason === "string" ? `\nReason: ${params.reason}` : "";
+  if (method === "item/permissions/requestApproval")
+    return `Codex requests permissions for this turn.\nRequested scope: ${JSON.stringify(requestedPermissions(params))}${reason}`;
+  if (method === "item/commandExecution/requestApproval")
+    return `Codex requests command approval.\nCommand: ${typeof params.command === "string" ? params.command : "See the native item"}${reason}`;
+  if (method === "item/fileChange/requestApproval")
+    return `Codex requests file-change approval.\nGrant root: ${params.grantRoot ?? "the current workspace"}${reason}`;
+  if (method === "item/tool/requestUserInput")
+    return `Codex requests input. Supply {"answers":{questionId:{"answers":[...]}}} JSON in the Hub answer text when accepting.\nQuestions: ${JSON.stringify(params.questions)}`;
+  return `Codex MCP server ${params.serverName ?? ""} requests ${params.mode ?? "form"} input.\n${params.message ?? ""}\n${params.mode === "url" ? params.url : `Supply requested JSON in the answer text: ${JSON.stringify(params.requestedSchema)}`}`;
+}
 /** The designated Hub answer can grant only the native request's own requested permissions. */
 export function responseFor(
   method: string,
@@ -20,15 +38,7 @@ export function responseFor(
     return { decision: z.enum(["accept", "decline", "cancel"]).parse(choice) };
   if (method === "item/permissions/requestApproval")
     return {
-      permissions:
-        choice === "accept"
-          ? {
-              ...(params.permissions?.network ? { network: params.permissions.network } : {}),
-              ...(params.permissions?.fileSystem
-                ? { fileSystem: params.permissions.fileSystem }
-                : {}),
-            }
-          : {},
+      permissions: choice === "accept" ? requestedPermissions(params) : {},
       scope: "turn",
     };
   if (method === "item/tool/requestUserInput") {

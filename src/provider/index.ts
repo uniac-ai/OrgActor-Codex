@@ -21,6 +21,13 @@ export class CodexProvider {
     return {
       enabled: this.store.data.providerEnabled,
       connected: this.connection?.connected ?? false,
+      state: this.store.data.providerSuspended
+        ? ("suspended" as const)
+        : this.connection?.connected
+          ? ("connected" as const)
+          : this.store.data.providerEnabled
+            ? ("connecting" as const)
+            : ("paused" as const),
       ...(this.error ? { error: this.error } : {}),
     };
   }
@@ -63,7 +70,11 @@ export class CodexProvider {
             z.strictObject({}).parse(m.params);
             return { configSchema: z.toJSONSchema(ExecutionConfig, { io: "input" }) };
           }
-          if (m.method === "provider.createActor") return this.create(m.params);
+          if (m.method === "provider.createActor") {
+            if (!this.store.data.providerEnabled)
+              throw new Fault("unavailable", "This Provider is paused.");
+            return this.create(m.params);
+          }
           throw new Fault("METHOD_NOT_FOUND", "This Provider does not implement that method.");
         };
         void work().then(

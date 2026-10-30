@@ -1,11 +1,8 @@
-import { timingSafeEqual } from "node:crypto";
 import type { Context } from "hono";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
-import { hash, token } from "../runtime/index.js";
+import { equalSecret, hash, token } from "../runtime/index.js";
 import { Fault } from "./schema.js";
 
-const equal = (a: string, b: string) =>
-  a.length === b.length && timingSafeEqual(Buffer.from(a), Buffer.from(b));
 export class OperatorAuth {
   private invitations = new Map<string, number>();
   private sessions = new Map<string, { csrf: string; expires: number }>();
@@ -56,7 +53,7 @@ export class OperatorAuth {
     this.origin(c);
     if (
       !["GET", "HEAD"].includes(c.req.method) &&
-      !equal(c.req.header("X-CSRF-Token") ?? "", session.csrf)
+      !equalSecret(c.req.header("X-CSRF-Token") ?? "", session.csrf)
     )
       throw new Fault("CSRF_REJECTED", "Refresh the console session before making changes.", 403);
   }

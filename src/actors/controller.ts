@@ -5,7 +5,7 @@ import type { CodexAdapter, NativeEvent } from "../codex/index.js";
 import { ActorHubSession, type Exposure, type Incoming } from "../hub/actor.js";
 import { type ActorSnapshot, Fault } from "../management/schema.js";
 import type { Bootstrap, RuntimeStore, Submission } from "../runtime/index.js";
-import { responseFor, supportedRequests } from "./requests.js";
+import { requestReview, responseFor, supportedRequests } from "./requests.js";
 
 const Text = z.string().trim().min(1).max(20_000);
 const Run = z.strictObject({ text: Text });
@@ -47,6 +47,13 @@ export class ActorController extends EventEmitter {
       actorId: this.bootstrap.actorId,
       enabled: this.bootstrap.enabled,
       connected: this.hub?.connection.connected ?? false,
+      connectionState: this.bootstrap.suspended
+        ? "suspended"
+        : this.hub?.connection.connected
+          ? "connected"
+          : this.bootstrap.enabled
+            ? "connecting"
+            : "paused",
       observation: this.adapter && this.observedAt ? "available" : "unavailable",
       observedAt: this.observedAt,
       threadId: this.bootstrap.threadId,
@@ -316,10 +323,28 @@ export class ActorController extends EventEmitter {
       this.store.save();
       if (next.cancelRequested && this.turnId === next.turnId)
         await this.adapter.interrupt(this.bootstrap.threadId, next.turnId);
-    } catch {
-      next.state = "unknown";
-      this.lastError =
-        "The submitted turn's outcome is unknown. Reconnect to reconcile; this input will not be replayed.";
+    } catch (error) {
+      if (next.result || next.turnId) {
+        this.lastError =
+          "The turn was accepted, but cancellation could not be confirmed. Reconnect to reconcile.";
+      } else if (
+        error instanceof Fault &&
+        ["NATIVE_REJECTED", "BACKEND_UNREACHABLE", "EXECUTION_NOT_ADMITTED"].includes(error.code)
+      ) {
+        next.state = "done";
+        this.lastError = error.message;
+        next.result = {
+          inputId: next.id,
+          turnId: "",
+          status: "failed",
+          output: "Codex refused the submitted turn.",
+        };
+        this.emit("result");
+      } else {
+        next.state = "unknown";
+        this.lastError =
+          "The submitted turn's outcome is unknown. Reconnect to reconcile; this input will not be replayed.";
+      }
       this.store.save();
     } finally {
       this.pumping = false;
@@ -362,7 +387,11 @@ export class ActorController extends EventEmitter {
       if (turn) {
         submission.turnId = turn.id;
         if (turn.status !== "inProgress") this.finish(turn);
-        else submission.state = "running";
+        else {
+          submission.state = "running";
+          if (submission.cancelRequested && this.turnId === turn.id)
+            await this.adapter?.interrupt(this.bootstrap.threadId, turn.id);
+        }
       } else submission.state = "unknown";
     }
     this.appliedInputs = new Set(
@@ -478,23 +507,37 @@ export class ActorController extends EventEmitter {
       return;
     }
     this.bootstrap.approvals ??= {};
+    const questionText = `${requestReview(request.method, request.params)}\nSession ${this.bootstrap.threadId}, turn ${request.params.turnId}, request ${id}.`;
+    if (questionText.length > 18_000) {
+      this.adapter?.answer(
+        request.id,
+        responseFor(request.method, request.params, "decline", null),
+      );
+      this.requests.delete(id);
+      this.lastError =
+        "The native request exceeded the Hub review size and was declined without granting access.";
+      return;
+    }
     let binding = this.bootstrap.approvals[id];
     if (
       binding &&
       (binding.state === "resolved" ||
         binding.threadId !== this.bootstrap.threadId ||
         binding.turnId !== this.turnId ||
-        binding.answerer !== self.manager)
+        binding.answerer !== self.manager ||
+        binding.method !== request.method ||
+        binding.questionText !== questionText)
     )
       return;
     if (!binding) {
       binding = {
         requestId: id,
         threadId: this.bootstrap.threadId,
-        turnId: this.turnId as string,
+        turnId: this.turnId,
         method: request.method,
         answerer: self.manager,
         inputIds: [...this.appliedInputs],
+        questionText,
         state: "asking",
       };
       this.bootstrap.approvals[id] = binding;
@@ -502,7 +545,7 @@ export class ActorController extends EventEmitter {
       const question = (
         await hub.call(hub.alias("hub:questions", "question_ask"), {
           to: self.manager,
-          text: `${approvalSummary(request)}\nSession ${this.bootstrap.threadId}, turn ${request.params.turnId}, request ${id}.\n${request.method === "item/tool/requestUserInput" || request.method === "mcpServer/elicitation/request" ? `Accepted form/input answers supply JSON in answer text: ${JSON.stringify(request.params.questions ?? request.params.requestedSchema ?? { mode: request.params.mode }).slice(0, 10000)}` : ""}`,
+          text: questionText,
           answerer: self.manager,
           options: ["accept", "decline", "cancel"].map((label) => ({ label })),
         })
@@ -510,10 +553,41 @@ export class ActorController extends EventEmitter {
       if (this.requests.get(id) !== request || binding.state === "resolved") return;
       if (!question?.id) return;
       binding.questionId = question.id;
+      binding.questionCursor = question.cursor;
       binding.state = "waiting";
       this.store.save();
     }
-    if (!binding.questionId) return;
+    if (!binding.questionId) {
+      const observed = (
+        await hub.call(hub.alias("hub:questions", "questions"), {
+          from: this.bootstrap.actorId,
+          to: binding.answerer,
+          wait: 0,
+          limit: 200,
+        })
+      ).structuredContent as any;
+      const matches =
+        observed?.questions?.filter(
+          (q: any) =>
+            q.from === this.bootstrap.actorId &&
+            q.to === binding.answerer &&
+            q.answerer === binding.answerer &&
+            q.text === binding.questionText &&
+            JSON.stringify(q.options?.map((o: any) => o.label)) ===
+              JSON.stringify(["accept", "decline", "cancel"]),
+        ) ?? [];
+      if (matches.length !== 1) {
+        this.lastError =
+          matches.length > 1
+            ? "Multiple Hub questions match this native request; no answer was applied."
+            : "Hub question issuance is uncertain; no matching question was observed and no duplicate was issued.";
+        return;
+      }
+      binding.questionId = matches[0].id;
+      binding.questionCursor = matches[0].cursor;
+      binding.state = "waiting";
+      this.store.save();
+    }
     request.questionId = binding.questionId;
     while (
       !this.stopped &&
@@ -523,6 +597,7 @@ export class ActorController extends EventEmitter {
       const result = (
         await hub.call(hub.alias("hub:questions", "questions"), {
           from: this.bootstrap.actorId,
+          ...(binding.questionCursor === undefined ? {} : { since: binding.questionCursor - 1 }),
           wait: 0,
           limit: 200,
         })

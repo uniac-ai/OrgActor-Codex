@@ -69,6 +69,7 @@ export interface ActorSnapshot {
   actorId: string;
   enabled: boolean;
   connected: boolean;
+  connectionState: "connected" | "connecting" | "paused" | "suspended";
   observation: "available" | "unavailable";
   observedAt: string | null;
   threadId: string;
@@ -90,7 +91,12 @@ export interface PublicState {
     hub?: { url: string; providerId: string; credentialPresent: boolean };
   };
   probes: Partial<Record<ProbeStage, Probe>>;
-  provider: { enabled: boolean; connected: boolean; error?: string };
+  provider: {
+    enabled: boolean;
+    connected: boolean;
+    state: "connected" | "connecting" | "paused" | "suspended";
+    error?: string;
+  };
   actors: ActorSnapshot[];
 }
 export class Fault extends Error {

@@ -1,5 +1,6 @@
 import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
+import { realpathSync } from "node:fs";
 import { connect } from "node:net";
 import { Duplex } from "node:stream";
 import WebSocket from "ws";
@@ -174,13 +175,17 @@ export class AppServerAdapter implements CodexAdapter {
       approvalPolicy: "on-request",
       sandbox: "read-only",
       ephemeral: false,
+      modelProvider: "openai",
+      allowProviderModelFallback: false,
       serviceName: "orgactor-codex",
       config: {
+        forced_login_method: "chatgpt",
         "mcp_servers.org": {
           url: input.bridgeUrl,
           http_headers: { Authorization: `Bearer ${input.bridgeToken}` },
           required: false,
           enabled: true,
+          tool_timeout_sec: 660,
         },
       },
     });
@@ -192,14 +197,17 @@ export class AppServerAdapter implements CodexAdapter {
     return this.protocol.request("thread/resume", {
       threadId,
       excludeTurns: true,
+      modelProvider: "openai",
       ...(binding
         ? {
             config: {
+              forced_login_method: "chatgpt",
               "mcp_servers.org": {
                 url: binding.bridgeUrl,
                 http_headers: { Authorization: `Bearer ${binding.bridgeToken}` },
                 required: false,
                 enabled: true,
+                tool_timeout_sec: 660,
               },
             },
           }
@@ -352,7 +360,8 @@ export class CodexBackend {
     if (config.endpoint.startsWith("unix://"))
       return {
         ws: new WebSocket("ws://codex-app-server/rpc", {
-          createConnection: () => connect(decodeURIComponent(config.endpoint.slice(7))),
+          createConnection: () =>
+            connect(realpathSync(decodeURIComponent(config.endpoint.slice(7)))),
           perMessageDeflate: false,
         }),
       };

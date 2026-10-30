@@ -342,7 +342,14 @@ function ActorsView(p: ActorsFeature) {
                         </TableCell>
                         <TableCell>
                           <Badge variant="outline">
-                            {a.connected ? "Connected" : a.enabled ? "Connecting" : "Paused"}
+                            {
+                              {
+                                connected: "Connected",
+                                connecting: "Connecting",
+                                paused: "Paused",
+                                suspended: "Suspended",
+                              }[a.connectionState]
+                            }
                           </Badge>
                         </TableCell>
                         <TableCell>{a.queued}</TableCell>
@@ -350,11 +357,11 @@ function ActorsView(p: ActorsFeature) {
                           <Button
                             variant="ghost"
                             size="icon"
-                            aria-label={`${a.enabled ? "Pause connection for" : "Resume connection for"} ${a.actorId}`}
+                            aria-label={`${a.connectionState === "suspended" || !a.enabled ? "Resume connection for" : "Pause connection for"} ${a.actorId}`}
                             disabled={p.busy}
-                            onClick={() => p.onEnabled(a.actorId, !a.enabled)}
+                            onClick={() => p.onToggleConnection(a.actorId)}
                           >
-                            {a.enabled ? <Pause /> : <Play />}
+                            {a.connectionState === "suspended" || !a.enabled ? <Play /> : <Pause />}
                           </Button>
                         </TableCell>
                       </TableRow>
@@ -550,14 +557,14 @@ export const views = {
             }
           </span>
         </div>
-        <main>
+        <div className="console-main">
           {p.error ? (
             <div role="alert" className="error">
               {p.error}
             </div>
           ) : null}
           {p.children}
-        </main>
+        </div>
       </SidebarInset>
     </SidebarProvider>
   ),
@@ -611,11 +618,14 @@ export const views = {
             <dt>Connection</dt>
             <dd>
               <Badge variant="outline">
-                {p.state.provider.connected
-                  ? "Connected"
-                  : p.state.provider.enabled
-                    ? "Connecting"
-                    : "Paused"}
+                {
+                  {
+                    connected: "Connected",
+                    connecting: "Connecting",
+                    paused: "Paused",
+                    suspended: "Suspended",
+                  }[p.state.provider.state]
+                }
               </Badge>
             </dd>
             <dt>Admission check</dt>
@@ -625,12 +635,17 @@ export const views = {
           </dl>
           {p.state.provider.error ? <div className="notice">{p.state.provider.error}</div> : null}
           <div className="actions">
-            <Button
-              disabled={p.busy || !p.state.settings.hub}
-              onClick={() => p.onEnabled(!p.state.provider.enabled)}
-            >
-              {p.state.provider.enabled ? <Pause /> : <Play />}
-              {p.state.provider.enabled ? "Pause Provider" : "Enable Provider"}
+            <Button disabled={p.busy || !p.state.settings.hub} onClick={p.onToggle}>
+              {p.state.provider.state === "suspended" || !p.state.provider.enabled ? (
+                <Play />
+              ) : (
+                <Pause />
+              )}
+              {p.state.provider.state === "suspended"
+                ? "Resume Provider"
+                : p.state.provider.enabled
+                  ? "Pause Provider"
+                  : "Enable Provider"}
             </Button>
             <Button variant="outline" disabled={p.busy} onClick={p.onProbe}>
               <RefreshCw />

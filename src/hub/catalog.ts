@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from "node:util";
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import { Fault } from "../management/schema.js";
@@ -17,12 +18,15 @@ export interface SemanticTool {
     call: string;
     interface: {
       name: string;
+      title?: string;
+      description?: string;
       input: Tool["inputSchema"];
       output?: Tool["outputSchema"];
       one_way: boolean;
       long_running: boolean;
     };
     routed: boolean;
+    read_only?: boolean;
   }[];
 }
 export function catalogOf(tools: Tool[]): SemanticTool[] {
@@ -40,16 +44,47 @@ export function catalogOf(tools: Tool[]): SemanticTool[] {
       group.interfaces.some((i) => i.interface.name === meta.interface)
     )
       throw new Fault("HUB_CATALOG_INVALID", "The Hub returned inconsistent Tool metadata.", 502);
+    const output = tool.outputSchema;
+    const branches = output?.anyOf;
+    if (
+      meta.routed &&
+      output &&
+      (!Array.isArray(branches) ||
+        branches.length !== 2 ||
+        !isDeepStrictEqual(branches[1], {
+          type: "object",
+          properties: { call: { type: "string" }, state: { const: "pending" } },
+          required: ["call", "state"],
+        }))
+    )
+      throw new Fault(
+        "HUB_CATALOG_INVALID",
+        "The Hub returned an invalid routed interface schema.",
+        502,
+      );
+    const own =
+      meta.routed && Array.isArray(branches)
+        ? {
+            ...branches[0],
+            ...(output?.$defs === undefined ? {} : { $defs: output.$defs }),
+            ...(output?.definitions === undefined ? {} : { definitions: output.definitions }),
+          }
+        : output;
     group.interfaces.push({
       call: tool.name,
       interface: {
         name: meta.interface,
+        ...(tool.title === undefined ? {} : { title: tool.title }),
+        ...(tool.description === undefined ? {} : { description: tool.description }),
         input: tool.inputSchema,
-        ...(tool.outputSchema ? { output: tool.outputSchema } : {}),
+        ...(own ? { output: own } : {}),
         one_way: meta.one_way,
         long_running: meta.long_running,
       },
       routed: meta.routed,
+      ...(tool.annotations?.readOnlyHint === undefined
+        ? {}
+        : { read_only: tool.annotations.readOnlyHint }),
     });
     aliases.add(tool.name);
     catalog.set(meta.id, group);

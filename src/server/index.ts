@@ -20,13 +20,13 @@ export async function startServer(options: {
 }) {
   const store = new RuntimeStore(options.root);
   const backend = new CodexBackend(store);
-  const actors = new ActorSupervisor(store, () => backend.get());
+  const actors = new ActorSupervisor(store, () => setup.executionAdapter());
   const provider = new CodexProvider(
     store,
-    () => backend.get(),
+    () => setup.executionAdapter(),
     (id) => actors.launch(id),
   );
-  const setup = new SetupService(store, backend, provider);
+  const setup: SetupService = new SetupService(store, backend, provider);
   const bridge = new SessionMcpBridge(store, actors);
   const auth = new OperatorAuth();
   const app = management(store, setup, provider, actors, auth);
@@ -58,7 +58,10 @@ export async function startServer(options: {
   const server = createServer((req, res) => {
     const path = req.url?.split("?")[0];
     if (path === "/mcp") {
-      void bridge.handle(req, res);
+      void bridge.handle(req, res).catch(() => {
+        if (!res.headersSent) res.writeHead(500);
+        res.end();
+      });
       return;
     }
     if (path?.startsWith("/bridge-health/")) {

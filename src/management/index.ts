@@ -70,6 +70,7 @@ export function management(
             actorId: b.actorId,
             enabled: b.enabled,
             connected: false,
+            connectionState: b.suspended ? "suspended" : b.enabled ? "connecting" : "paused",
             observation: "unavailable",
             observedAt: null,
             threadId: b.threadId,

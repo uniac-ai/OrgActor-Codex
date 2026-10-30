@@ -1,4 +1,3 @@
-import { timingSafeEqual } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
@@ -11,7 +10,7 @@ import {
   type Tool,
 } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
-import type { RuntimeStore } from "../runtime/index.js";
+import { equalSecret, type RuntimeStore } from "../runtime/index.js";
 import type { ActorSupervisor } from "./supervisor.js";
 
 export class SessionMcpBridge {
@@ -27,10 +26,8 @@ export class SessionMcpBridge {
       return;
     }
     const supplied = req.headers.authorization?.replace(/^Bearer /, "") ?? "";
-    const bootstrap = Object.values(this.store.data.actors).find(
-      (b) =>
-        b.bridgeToken.length === supplied.length &&
-        timingSafeEqual(Buffer.from(b.bridgeToken), Buffer.from(supplied)),
+    const bootstrap = Object.values(this.store.data.actors).find((b) =>
+      equalSecret(b.bridgeToken, supplied),
     );
     if (!bootstrap?.enabled) {
       res.writeHead(401).end();

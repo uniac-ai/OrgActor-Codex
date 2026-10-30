@@ -158,7 +158,11 @@ export function ConsoleControl() {
       <views.Provider
         state={state}
         busy={busy}
-        onEnabled={(enabled) => void perform(() => client.provider(enabled))}
+        onToggle={() =>
+          void perform(() =>
+            client.provider(state.provider.state === "suspended" || !state.provider.enabled),
+          )
+        }
         onProbe={() => void perform(() => client.probe("hub"))}
       />
     );
@@ -212,7 +216,14 @@ export function ConsoleControl() {
             if (actor?.turnId) await client.interrupt(actor.actorId, actor.turnId);
           })
         }
-        onEnabled={(id, enabled) => void perform(() => client.actor(id, { enabled }))}
+        onToggleConnection={(id) =>
+          void perform(() => {
+            const current = state.actors.find((a) => a.actorId === id);
+            return client.actor(id, {
+              enabled: current?.connectionState === "suspended" || !current?.enabled,
+            });
+          })
+        }
         onAuthority={(id, approvalAuthority) =>
           void perform(() => client.actor(id, { approvalAuthority }))
         }

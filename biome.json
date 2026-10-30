@@ -7,7 +7,7 @@
   "formatter": { "indentStyle": "space", "lineWidth": 100 },
   "linter": {
     "enabled": true,
-    "rules": { "recommended": true, "suspicious": { "noExplicitAny": "off" } }
+    "rules": { "preset": "recommended", "suspicious": { "noExplicitAny": "off" } }
   },
   "javascript": { "formatter": { "quoteStyle": "double" } },
   "css": { "parser": { "tailwindDirectives": true } }

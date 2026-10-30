@@ -100,9 +100,11 @@ test("ManagementApi enforces one-time sign-in, CSRF, origin and write-only secre
     body: JSON.stringify({ token: invitation }),
   });
   assert.equal(login.status, 200);
-  const cookie = login.headers.get("set-cookie")!.split(";")[0];
-  assert.match(login.headers.get("set-cookie")!, /HttpOnly/);
-  assert.match(login.headers.get("set-cookie")!, /SameSite=Strict/);
+  const cookieHeader = login.headers.get("set-cookie");
+  assert.ok(cookieHeader);
+  const cookie = cookieHeader.split(";")[0];
+  assert.match(cookieHeader, /HttpOnly/);
+  assert.match(cookieHeader, /SameSite=Strict/);
   const { csrf } = (await login.json()) as any;
   assert.equal(
     (
@@ -253,8 +255,10 @@ test("model Actor creation schema removes only its known credential field", () =
   };
   const visible = projectTool(original);
   assert.deepEqual(visible.outputSchema?.required, ["actor"]);
-  assert.ok(!Object.hasOwn(visible.outputSchema!.properties as object, "credential"));
-  assert.ok(Object.hasOwn(original.outputSchema!.properties as object, "credential"));
+  assert.ok(visible.outputSchema?.properties);
+  assert.ok(original.outputSchema?.properties);
+  assert.ok(!Object.hasOwn(visible.outputSchema.properties as object, "credential"));
+  assert.ok(Object.hasOwn(original.outputSchema.properties as object, "credential"));
   assert.deepEqual(visible._meta, original._meta);
 });
 test("checking an active Provider uses the actual admitted socket; replacement stops autonomous retries", async (t) => {
@@ -280,7 +284,8 @@ test("checking an active Provider uses the actual admitted socket; replacement s
     }),
   );
   const address = sockets.address() as any;
-  store.data.settings.hub!.url = `http://127.0.0.1:${address.port}`;
+  assert.ok(store.data.settings.hub);
+  store.data.settings.hub.url = `http://127.0.0.1:${address.port}`;
   store.data.providerEnabled = true;
   const first = new CodexProvider(
     store,
@@ -303,7 +308,8 @@ test("checking an active Provider uses the actual admitted socket; replacement s
     () => {},
   );
   t.after(() => second.close());
-  const closed = once(first.connection!, "closed");
+  assert.ok(first.connection);
+  const closed = once(first.connection, "closed");
   await second.start();
   await closed;
   assert.equal(store.data.providerSuspended, 4000);

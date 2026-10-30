@@ -5,6 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { ActorController } from "../src/actors/controller.js";
 import { responseFor } from "../src/actors/requests.js";
+import { Fault } from "../src/management/schema.js";
 import { type Bootstrap, RuntimeStore } from "../src/runtime/index.js";
 
 function deferred<T>() {
@@ -345,4 +346,152 @@ test("no controller observation does not report an idle native executor", (t) =>
   const f = fixture(t);
   f.actor.adapter = undefined;
   assert.equal(f.actor.snapshot().observation, "unavailable");
+});
+
+test("explicit native refusal settles the run as failed and releases the next queued input", async (t) => {
+  const f = fixture(t);
+  let attempts = 0;
+  f.adapter.start = async (...args: any[]) => {
+    f.starts.push(args);
+    if (++attempts === 1) throw new Fault("NATIVE_REJECTED", "Refused");
+    return "second-turn";
+  };
+  const first = f.actor.enqueue("refused", "first");
+  const second = f.actor.enqueue("second", "second");
+  await new Promise(setImmediate);
+  await new Promise(setImmediate);
+  assert.equal(first.state, "done");
+  assert.equal(first.result?.status, "failed");
+  assert.equal(second.state, "running");
+  assert.equal(second.turnId, "second-turn");
+  assert.equal(attempts, 2);
+});
+
+test("durable cancellation recovered by native clientId interrupts only its correlated active turn", async (t) => {
+  const f = fixture(t);
+  f.actor.adapter = undefined;
+  const input = f.actor.enqueue("cancelled", "task");
+  input.state = "unknown";
+  input.cancelRequested = true;
+  f.actor.adapter = f.adapter as any;
+  f.history([
+    {
+      id: "foreign",
+      status: "completed",
+      items: [
+        { type: "userMessage", clientId: "foreign", content: [{ text: "[input cancelled]" }] },
+      ],
+    },
+    {
+      id: "correlated",
+      status: "inProgress",
+      items: [{ type: "userMessage", clientId: "cancelled" }],
+    },
+  ]);
+  await f.actor.reconcile();
+  assert.deepEqual(f.interrupts, ["correlated"]);
+  assert.equal(input.turnId, "correlated");
+  assert.equal(f.starts.length, 0);
+});
+
+test("lost Hub approval reply reconciles its exact scoped question after restart without duplicate issuance", async (t) => {
+  const f = fixture(t);
+  f.bootstrap.config.approvalAuthority = "hub";
+  f.actor.turnId = "turn-owned";
+  const params = {
+    turnId: "turn-owned",
+    reason: "Read one input and write one output",
+    permissions: {
+      network: { enabled: true },
+      fileSystem: { read: ["/approved/input"], write: ["/approved/output"] },
+    },
+  };
+  const questions: any[] = [];
+  let issued = 0;
+  const responses: any[] = [];
+  const call = async (name: string, input: any) => {
+    if (name === "team")
+      return {
+        structuredContent: { root: "root", positions: [{ id: "actor", manager: "manager" }] },
+      };
+    if (name === "question_ask") {
+      issued++;
+      questions.push({
+        id: "committed",
+        cursor: 7,
+        from: "actor",
+        ...input,
+        answer: { by: "manager", choice: "accept", text: null },
+      });
+      throw new Fault("NATIVE_UNKNOWN", "Hub response was lost");
+    }
+    return { structuredContent: { questions } };
+  };
+  (f.actor.hub as any).call = call;
+  f.event("item/permissions/requestApproval", params, "request");
+  await new Promise(setImmediate);
+  assert.equal(issued, 1);
+  assert.equal(f.bootstrap.approvals?.request.state, "asking");
+  assert.equal(f.bootstrap.approvals?.request.questionId, undefined);
+  for (const scope of [
+    "/approved/input",
+    "/approved/output",
+    '"enabled":true',
+    "Read one input and write one output",
+    "Session owned, turn turn-owned, request request",
+  ])
+    assert.ok(questions[0].text.includes(scope));
+  const uncertain = structuredClone(f.store.data);
+  const restored = new RuntimeStore(f.store.root);
+  const actor = new ActorController(
+    restored.data.actors.actor,
+    restored,
+    async () => f.adapter as any,
+  );
+  actor.turnId = "turn-owned";
+  actor.adapter = {
+    ...f.adapter,
+    answer: (id: string, result: any) => responses.push({ id, result }),
+  } as any;
+  actor.hub = { ...f.actor.hub, call } as any;
+  (actor as any).observe({
+    method: "item/permissions/requestApproval",
+    id: "request",
+    params: { threadId: "owned", ...params },
+  });
+  await new Promise(setImmediate);
+  await new Promise(setImmediate);
+  assert.equal(issued, 1);
+  assert.deepEqual(responses, [
+    { id: "request", result: { permissions: params.permissions, scope: "turn" } },
+  ]);
+  assert.equal(restored.data.actors.actor.approvals?.request.state, "resolved");
+  const ambiguous = fixture(t);
+  ambiguous.store.data = uncertain;
+  const other = new ActorController(
+    uncertain.actors.actor,
+    ambiguous.store,
+    async () => f.adapter as any,
+  );
+  other.turnId = "turn-owned";
+  other.adapter = {
+    ...f.adapter,
+    answer: () => assert.fail("Ambiguous questions cannot authorize a native response"),
+  } as any;
+  other.hub = {
+    ...f.actor.hub,
+    call: async (name: string, input: any) =>
+      name === "questions"
+        ? { structuredContent: { questions: [...questions, { ...questions[0], id: "duplicate" }] } }
+        : call(name, input),
+  } as any;
+  (other as any).observe({
+    method: "item/permissions/requestApproval",
+    id: "request",
+    params: { threadId: "owned", ...params },
+  });
+  await new Promise(setImmediate);
+  await new Promise(setImmediate);
+  assert.match(other.lastError ?? "", /Multiple Hub questions/);
+  assert.equal(issued, 1);
 });

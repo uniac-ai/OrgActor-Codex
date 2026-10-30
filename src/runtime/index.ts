@@ -1,4 +1,4 @@
-import { createHash, randomBytes } from "node:crypto";
+import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import {
   chmodSync,
   existsSync,
@@ -13,6 +13,11 @@ import type { ExecutionConfig, Probe, ProbeStage, Settings } from "../management
 
 export const hash = (value: string) => createHash("sha256").update(value).digest("hex");
 export const token = () => randomBytes(32).toString("base64url");
+export const equalSecret = (a: string, b: string): boolean => {
+  const left = Buffer.from(a);
+  const right = Buffer.from(b);
+  return left.length === right.length && timingSafeEqual(left, right);
+};
 export interface Submission {
   id: string;
   text: string;
@@ -32,11 +37,13 @@ export interface Submission {
 export interface ApprovalBinding {
   requestId: string;
   threadId: string;
-  turnId: string;
+  turnId: string | null;
   method: string;
   answerer: string;
   inputIds?: string[];
   questionId?: string;
+  questionText?: string;
+  questionCursor?: number;
   state: "asking" | "waiting" | "resolved";
 }
 export interface Bootstrap {

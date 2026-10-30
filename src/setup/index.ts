@@ -1,5 +1,5 @@
 import { z } from "zod";
-import type { CodexBackend } from "../codex/index.js";
+import type { AppServerAdapter, CodexAdapter, CodexBackend } from "../codex/index.js";
 import { Fault, type Probe, type ProbeStage, Settings } from "../management/schema.js";
 import type { CodexProvider } from "../provider/index.js";
 import { hash, type RuntimeStore, token } from "../runtime/index.js";
@@ -12,6 +12,45 @@ export class SetupService {
     private backend: CodexBackend,
     private provider?: CodexProvider,
   ) {}
+  async executionAdapter(): Promise<CodexAdapter> {
+    const native = await this.backend.get();
+    return {
+      create: (input) => native.create(input),
+      resume: (id, binding) => native.resume(id, binding),
+      read: (id) => native.read(id),
+      bridgeReady: (id) => native.bridgeReady(id),
+      start: async (id, text, inputId) => {
+        await this.admitExecution(native, id);
+        return native.start(id, text, inputId);
+      },
+      steer: async (id, turnId, text, inputId) => {
+        await this.admitExecution(native, id);
+        return native.steer(id, turnId, text, inputId);
+      },
+      interrupt: (id, turnId) => native.interrupt(id, turnId),
+      terminals: (id) => native.terminals(id),
+      terminate: (id, processId) => native.terminate(id, processId),
+      answer: (id, result) => native.answer(id, result),
+      reject: (id) => native.reject(id),
+      watch: (listener) => native.watch(listener),
+    };
+  }
+  private async admitExecution(native: AppServerAdapter, threadId: string): Promise<void> {
+    try {
+      const account = await native.protocol.request("account/read", { refreshToken: false });
+      if (account.account?.type !== "chatgpt") throw new Error("ChatGPT authentication required");
+      const quota = await native.protocol.request("account/rateLimits/read");
+      if (quota.ordinaryUsageAllowed !== true) throw new Error("Included plan usage required");
+      const session = await native.read(threadId);
+      if (session.thread?.modelProvider !== "openai") throw new Error("OpenAI session required");
+    } catch {
+      throw new Fault(
+        "EXECUTION_NOT_ADMITTED",
+        "Model work requires a current ChatGPT-authenticated OpenAI session with confirmed included plan usage. Check the account before submitting again.",
+        422,
+      );
+    }
+  }
   configure(raw: unknown): void {
     if (this.loginOwner)
       throw new Fault(
