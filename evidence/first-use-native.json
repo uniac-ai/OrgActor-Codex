@@ -1,0 +1,50 @@
+{
+  "sourceCommit": "0689875cc6e1cef806abe9d7f6cd1dbf6df5cc7d",
+  "affectedBaseline": "c7065e6b999fdcffcdec17fdb45cbc6d8338b822",
+  "disposableProbeCount": 2,
+  "modelTurns": 0,
+  "toolCalls": 0,
+  "extraHubActors": 0,
+  "presentationRenameBeforeVerification": false,
+  "probes": [
+    {
+      "threadId": "01a18e6f-d89c-7d41-a1af-b46d09e02197",
+      "historyMode": "paginated",
+      "metadataReadable": true,
+      "fullHistoryError": {
+        "step": "thread/read full",
+        "code": -32601,
+        "message": "list_turns is not supported yet"
+      },
+      "pagedHistoryError": {
+        "step": "thread/turns/list",
+        "code": -32601,
+        "message": "list_turns is not supported yet"
+      },
+      "archived": true
+    },
+    {
+      "threadId": "01a18e7a-eb12-7130-8787-990ca6b824ef",
+      "historyMode": "legacy",
+      "metadataReadable": true,
+      "fullHistoryError": {
+        "step": "thread/read full",
+        "code": -32600,
+        "message": "thread 01a18e7a-eb12-7130-8787-990ca6b824ef is not materialized yet; includeTurns is unavailable before first user message"
+      },
+      "archived": true
+    }
+  ],
+  "candidateVerification": {
+    "reusedLegacyProbe": true,
+    "unnamed": true,
+    "historyMode": "legacy",
+    "nativeStatus": "idle",
+    "authoritativeInitialEmptyHistory": true,
+    "metadataOnlyGuardPassed": true,
+    "archivedAfterVerification": true
+  },
+  "normalNewCreation": "Requests legacy history and automatically recognizes only its exact pre-first-message unmaterialized state with matching idle metadata; no operator naming is needed.",
+  "existingUnsupportedPaginatedHistory": "Remains an error; no arbitrary rejection is converted to empty history.",
+  "priorModelProofLimit": "Earlier model/control harness renamed before first-use readiness. Presentation naming now follows history and MCP readiness assertions."
+}
