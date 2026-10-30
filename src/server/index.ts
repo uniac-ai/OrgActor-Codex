@@ -90,14 +90,27 @@ export async function startServer(options: {
     }
     void listener(req, res);
   });
+  const close = async () => {
+    provider.close();
+    await actors.close();
+    backend.close();
+    server.closeAllConnections();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  };
   server.requestTimeout = 90_000;
-  if (store.data.providerEnabled && store.data.settings.hub) await setup.probe("hub");
-  server.listen(options.port ?? 8787, options.hostname ?? "127.0.0.1");
-  await once(server, "listening");
-  const address = server.address();
-  if (!address || typeof address === "string") throw new Error("No TCP listener");
-  const url = `http://${options.hostname ?? "127.0.0.1"}:${address.port}`;
-  actors.recover();
+  let url: string;
+  try {
+    if (store.data.providerEnabled && store.data.settings.hub) await setup.probe("hub");
+    server.listen(options.port ?? 8787, options.hostname ?? "127.0.0.1");
+    await once(server, "listening");
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("No TCP listener");
+    url = `http://${options.hostname ?? "127.0.0.1"}:${address.port}`;
+    actors.recover();
+  } catch (error) {
+    await close();
+    throw error;
+  }
   return {
     url,
     server,
@@ -116,12 +129,6 @@ export async function startServer(options: {
       );
     },
     app,
-    async close() {
-      provider.close();
-      await actors.close();
-      backend.close();
-      server.closeAllConnections();
-      await new Promise<void>((resolve) => server.close(() => resolve()));
-    },
+    close,
   };
 }

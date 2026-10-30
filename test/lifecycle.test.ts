@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
 import { once } from "node:events";
 import { mkdtempSync, rmSync } from "node:fs";
+import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { setTimeout } from "node:timers/promises";
 import { type WebSocket, WebSocketServer } from "ws";
 import { RuntimeStore } from "../src/runtime/index.js";
 import { startServer } from "../src/server/index.js";
@@ -175,4 +177,45 @@ test("composition cannot retarget retained execution records", async (t) => {
     (e: any) => e.code === "EXECUTION_CONFIG_BOUND",
   );
   assert.equal(new RuntimeStore(root).data.settings.hub?.providerId, "old");
+});
+
+test("HTTP bind failure releases its admitted Provider and schedules no reconnect", {
+  timeout: 10_000,
+}, async (t) => {
+  const occupied = createServer();
+  occupied.listen(0, "127.0.0.1");
+  await once(occupied, "listening");
+  t.after(() => new Promise<void>((resolve) => occupied.close(() => resolve())));
+  const mock = await hub(t);
+  let attempts = 0;
+  let disconnected!: () => void;
+  const released = new Promise<void>((r) => {
+    disconnected = r;
+  });
+  mock.server.on("connection", (socket) => {
+    socket.once("close", disconnected);
+    socket.on("message", (raw) => {
+      const message = JSON.parse(raw.toString());
+      attempts++;
+      answer(socket, message.id);
+    });
+  });
+  const root = home(t);
+  await assert.rejects(
+    startServer({
+      root,
+      port: (occupied.address() as { port: number }).port,
+      hub: { url: mock.url, providerId: "composed" },
+    }),
+    (e: any) => e.code === "EADDRINUSE",
+  );
+  await released;
+  assert.equal(mock.server.clients.size, 0);
+  await setTimeout(2200);
+  assert.equal(attempts, 1);
+  assert.equal(mock.server.clients.size, 0);
+  const runtime = await startServer({ root, port: 0 });
+  t.after(() => runtime.close());
+  assert.equal(runtime.ready, true);
+  assert.equal(attempts, 2);
 });
