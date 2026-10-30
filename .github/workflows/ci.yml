@@ -31,4 +31,4 @@ jobs:
         run: |
           docker run -d --name orgactor-codex-ci -p 127.0.0.1:8877:8787 --tmpfs /data:uid=1000,gid=1000,mode=0700 orgactor-codex:ci
           trap 'docker rm -f orgactor-codex-ci' EXIT
-          curl --retry 20 --retry-connrefused --retry-delay 1 --fail http://127.0.0.1:8877/ -o /dev/null
+          curl --retry 20 --retry-all-errors --retry-delay 1 --retry-max-time 30 --fail http://127.0.0.1:8877/ -o /dev/null
