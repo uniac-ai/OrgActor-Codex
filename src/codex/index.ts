@@ -289,28 +289,39 @@ export class SshAdapter extends AppServerAdapter {}
 export class CodexBackend {
   private current?: AppServerAdapter;
   private opening?: Promise<AppServerAdapter>;
+  private pending?: NativeProtocol;
   constructor(private store: RuntimeStore) {}
   async get(): Promise<AppServerAdapter> {
     if (this.current?.protocol.connected) return this.current;
     if (this.opening) return this.opening;
-    this.opening = this.open().finally(() => {
-      this.opening = undefined;
+    const opening = this.open().finally(() => {
+      if (this.opening === opening) this.opening = undefined;
     });
-    return this.opening;
+    this.opening = opening;
+    return opening;
   }
   private async open(): Promise<AppServerAdapter> {
     const config = this.store.data.settings.backend;
     if (!config) throw new Fault("BACKEND_UNCONFIGURED", "Configure a Codex backend first.", 422);
     const { ws, process: child } = this.transport(config);
     const protocol = new NativeProtocol(ws, child);
+    this.pending = protocol;
     try {
       await protocol.initialize();
+      if (this.pending !== protocol)
+        throw new Fault(
+          "BACKEND_UNREACHABLE",
+          "The backend configuration changed while connecting.",
+          503,
+        );
       this.current =
         config.kind === "ssh" ? new SshAdapter(protocol) : new AppServerAdapter(protocol);
       return this.current;
     } catch (error) {
-      protocol.close();
+      if (this.pending === protocol) protocol.close();
       throw error;
+    } finally {
+      if (this.pending === protocol) this.pending = undefined;
     }
   }
   private transport(config: BackendConfig): {
@@ -379,8 +390,12 @@ export class CodexBackend {
     return { ws: new WebSocket(config.endpoint, { perMessageDeflate: false }) };
   }
   close(): void {
+    const pending = this.pending;
+    this.pending = undefined;
+    this.opening = undefined;
     this.current?.protocol.close();
     this.current = undefined;
+    pending?.close();
   }
 }
 export function cleanEnvironment(): NodeJS.ProcessEnv {

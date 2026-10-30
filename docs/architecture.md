@@ -29,6 +29,8 @@ Runtime Zod schemas are shared with the inferred browser types. `/api/session` s
 
 Readiness is `unconfigured`, `unreachable`, `rejected` or `ready` from explicit probes with timestamps and configuration revisions. Configuration changes invalidate affected observations. No result is equivalent to a successful probe. Desktop root/catalog alignment and rendered Desktop visibility are separate evidence; native thread creation or persistence alone establishes neither Desktop claim. Setup guides the saved exact root and records factual mapping observations.
 
+Backend closure invalidates the owned pending initialization as well as the current connection. A late initializer cannot publish an old adapter, close a newer transport or clear a newer connection attempt after Setup changes configuration.
+
 ## Module contracts and layout
 
 | Directory                               | Contract and owned state                                                                                | Dependencies                                              |
