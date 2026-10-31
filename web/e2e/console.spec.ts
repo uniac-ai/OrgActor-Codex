@@ -198,7 +198,11 @@ test("operator controls use actor-scoped API routes and separate interrupt from 
   await page.getByRole("button", { name: "Actors", exact: true }).click();
   await page.keyboard.press("Escape");
   await page.getByRole("button", { name: bootstrap.actorId, exact: true }).click();
-  await expect(page.getByText(/the Form as its designated respondent/)).toBeVisible();
+  await expect(
+    page.getByText(
+      /the designated Form when available; otherwise follow the native input recovery notice/,
+    ),
+  ).toBeVisible();
   await screenshot(page, "mobile-native-form-fixture");
 });
 test("mobile navigation and setup remain reachable without clipping", async ({ page }) => {

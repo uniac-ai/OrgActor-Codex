@@ -440,16 +440,30 @@ test("ordinary MCP response must pass native constraints before any answer attem
   });
   assert.equal(mcpRequest(params).valid, true);
   const release = deferred<void>(),
-    requested = deferred<string>();
-  t.after(() => release.resolve());
+    requested = deferred<string>(),
+    managerReached = deferred<void>(),
+    managerRelease = deferred<void>(),
+    managerObserved = deferred<void>();
+  t.after(() => {
+    release.resolve();
+    managerRelease.resolve();
+  });
   const f = await nativeFormFixture(t),
     call = f.session.call.bind(f.session);
+  let submitted = false;
   f.session.call = async (name, args, timeout) => {
     if (name === f.session.alias("hub:forms", "form_get")) {
       requested.resolve(String(args.formID));
       await release.promise;
     }
-    return call(name, args, timeout);
+    const rechecking = submitted && name === f.session.alias("hub:team", "team");
+    if (rechecking) {
+      managerReached.resolve();
+      await managerRelease.promise;
+    }
+    const result = await call(name, args, timeout);
+    if (rechecking) setImmediate(() => managerObserved.resolve());
+    return result;
   };
   f.event("mcpServer/elicitation/request", params, "fixture-request");
   const formID = await requested.promise;
@@ -462,8 +476,16 @@ test("ordinary MCP response must pass native constraints before any answer attem
     answers: { [form.fields[0].name]: "1" },
   });
   assert.ok(answered.state === "done");
+  submitted = true;
   release.resolve();
-  for (let n = 0; n < 100 && !f.actor.lastError; n++) await new Promise(setImmediate);
+  await managerReached.promise;
+  assert.equal(f.answers.length, 0);
+  assert.equal(
+    Object.values(f.bootstrap.approvals ?? {}).some((b) => b.answerAttempt),
+    false,
+  );
+  managerRelease.resolve();
+  await managerObserved.promise;
   assert.match(f.actor.lastError ?? "", /Revise the Form response/);
   assert.equal(f.answers.length, 0);
   assert.equal(
