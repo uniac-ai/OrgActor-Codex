@@ -2,7 +2,7 @@ import { z } from "zod";
 import type { CodexAdapter } from "../codex/index.js";
 import { HubConnection } from "../hub/connection.js";
 import { Attach, ExecutionConfig, Fault, safeError } from "../management/schema.js";
-import { hash, type RuntimeStore, token } from "../runtime/index.js";
+import { type Bootstrap, hash, inboxScope, type RuntimeStore, token } from "../runtime/index.js";
 
 const Creation = Attach;
 export class CodexProvider {
@@ -202,7 +202,7 @@ export class CodexProvider {
   ): Promise<{ actorId: string }> {
     const settings = this.store.data.settings;
     const hub = settings.hub as NonNullable<typeof settings.hub>;
-    const bootstrap = {
+    const bootstrap: Bootstrap = {
       actorId: params.actorId,
       hubUrl: hub.url,
       ...(params.credential === undefined ? {} : { credential: params.credential }),
@@ -226,6 +226,7 @@ export class CodexProvider {
         bridgeToken: bootstrap.bridgeToken,
       });
       bootstrap.threadId = threadId;
+      bootstrap.inbox = { scope: inboxScope(bootstrap), after: 0, baseline: [] };
       this.store.data.journal[key] = { ...this.store.data.journal[key], state: "ready", threadId };
       this.store.save();
       this.launch(params.actorId);

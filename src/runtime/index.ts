@@ -9,6 +9,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
+import type { Form } from "@agentorg/cli/contract";
 import type { ExecutionConfig, Probe, ProbeStage, Settings } from "../management/schema.js";
 
 export const hash = (value: string) => createHash("sha256").update(value).digest("hex");
@@ -43,6 +44,12 @@ export interface ApprovalBinding {
   turnId: string | null;
   method: string;
   answerer: string;
+  sessionId?: string;
+  /** Null records an uncertain creation attempt; a missing field permits first issuance. */
+  formId?: string | null;
+  fields?: Form["fields"];
+  /** A selected response is durable before its single, unacknowledged native delivery attempt. */
+  answerAttempt?: { formRevision: number; response: object };
   inputIds?: string[];
   questionId?: string;
   questionText?: string;
@@ -58,6 +65,14 @@ export interface Bootstrap {
   bridgeToken: string;
   enabled: boolean;
   submissions: Submission[];
+  /** Continuation for this Hub/Actor/native binding and incoming message filter. */
+  inbox?: {
+    scope: string;
+    after: number;
+    /** Explicit host import baseline; these rows claim no native processing. */
+    baseline?: { messageID: string; recipientID: string; cursor: number }[];
+  };
+  /** Historical Hub cursor; never used for Workspace traversal. */
   cursor?: number;
   suspended?: number | "admission-rejected";
   approvals?: Record<string, ApprovalBinding>;
@@ -73,6 +88,16 @@ export interface Provision {
   state: "creating" | "ready" | "unknown" | "failed";
   threadId?: string;
 }
+export const inboxScope = (actor: Bootstrap): string =>
+  hash(
+    JSON.stringify([
+      actor.hubUrl,
+      actor.actorId,
+      actor.credential ?? null,
+      actor.threadId,
+      "incoming",
+    ]),
+  );
 export interface Runtime {
   revision: number;
   settings: Settings;

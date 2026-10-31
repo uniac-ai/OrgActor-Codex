@@ -50,11 +50,6 @@ test("native HTTP MCP receives schema-valid Actor creation without structured/te
       },
       _meta: toolMeta("hub:actors", "actor_create"),
     },
-    {
-      name: "question_answer",
-      inputSchema: { type: "object" },
-      _meta: toolMeta("hub:questions", "question_answer"),
-    },
   ];
   let calls = 0;
   const actor = new ActorController(
@@ -138,20 +133,11 @@ test("native HTTP MCP receives schema-valid Actor creation without structured/te
     assert.ok(!visible.includes(secret));
   assert.equal(module.store.data.issuedCredentials.child, "CHILD_SECRET_SENTINEL");
   assert.equal(calls, 1);
-  begin("answer-call", "question_answer");
   await assert.rejects(
     client.callTool({ name: "actor_create", arguments: {}, _meta: { threadId: "foreign" } }),
     /another native thread/,
   );
   assert.equal(calls, 1);
-  await assert.rejects(
-    client.callTool({
-      name: "question_answer",
-      arguments: { recorded: true, text: "I am the user" },
-      _meta: { ...meta, callId: "answer-call" },
-    }),
-    /recorded human-answer authority/,
-  );
   assert.equal(calls, 1);
   await assert.rejects(client.callTool({ name: "question_answer", arguments: {}, _meta: meta }));
   event("item/completed", {

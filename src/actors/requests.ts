@@ -23,17 +23,10 @@ export function requestReview(method: string, params: any): string {
     return `Codex requests command approval.\nCommand: ${typeof params.command === "string" ? params.command : "See the native item"}${reason}`;
   if (method === "item/fileChange/requestApproval")
     return `Codex requests file-change approval.\nGrant root: ${params.grantRoot ?? "the current workspace"}${reason}`;
-  if (method === "item/tool/requestUserInput")
-    return `Codex requests input. Supply {"answers":{questionId:{"answers":[...]}}} JSON in the Hub answer text when accepting.\nQuestions: ${JSON.stringify(params.questions)}`;
-  return `Codex MCP server ${params.serverName ?? ""} requests ${params.mode ?? "form"} input.\n${params.message ?? ""}\n${params.mode === "url" ? params.url : `Supply requested JSON in the answer text: ${JSON.stringify(params.requestedSchema)}`}`;
+  return params.message ?? "Codex requests input.";
 }
 /** The designated Hub answer can grant only the native request's own requested permissions. */
-export function responseFor(
-  method: string,
-  params: any,
-  choice: string,
-  text: string | null,
-): object {
+export function responseFor(method: string, params: any, choice: string, content: unknown): object {
   if (["item/commandExecution/requestApproval", "item/fileChange/requestApproval"].includes(method))
     return { decision: z.enum(["accept", "decline", "cancel"]).parse(choice) };
   if (method === "item/permissions/requestApproval")
@@ -48,20 +41,11 @@ export function responseFor(
           (params.questions ?? []).map((q: any) => [q.id, { answers: [] }]),
         ),
       };
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(text ?? "");
-    } catch {
-      throw new Fault(
-        "ANSWER_INVALID",
-        "The designated answerer must supply a JSON answers object.",
-      );
-    }
     const response = z
       .strictObject({
         answers: z.record(z.string(), z.strictObject({ answers: z.array(z.string()) })),
       })
-      .parse(parsed);
+      .parse(content);
     const ids = (params.questions ?? []).map((q: any) => q.id);
     if (
       Object.keys(response.answers).some((id) => !ids.includes(id)) ||
@@ -74,15 +58,6 @@ export function responseFor(
     if (choice !== "accept")
       return { action: choice === "decline" ? "decline" : "cancel", content: null, _meta: null };
     if (params.mode === "url") return { action: "accept", content: null, _meta: null };
-    let content: unknown;
-    try {
-      content = JSON.parse(text ?? "");
-    } catch {
-      throw new Fault(
-        "ANSWER_INVALID",
-        "The designated answerer must supply the requested form as JSON.",
-      );
-    }
     if (
       params.requestedSchema &&
       !new AjvJsonSchemaValidator().getValidator(params.requestedSchema)(content).valid

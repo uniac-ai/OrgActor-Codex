@@ -108,6 +108,7 @@ test("operator controls use actor-scoped API routes and separate interrupt from 
   const calls: string[] = [];
   let queued = 0;
   let active: string | null = "turn";
+  let pendingForm = false;
   let terminals = [{ processId: "native-terminal", command: "sleep 20", cwd: "/owned" }];
   const bootstrap = {
     actorId: "act_browser_fixture",
@@ -131,8 +132,17 @@ test("operator controls use actor-scoped API routes and separate interrupt from 
       observedAt: new Date().toISOString(),
       turnId: active,
       queued,
-      approvalAuthority: "desktop",
-      requests: [],
+      approvalAuthority: pendingForm ? "hub" : "desktop",
+      requests: pendingForm
+        ? [
+            {
+              id: "fixture-request",
+              method: "item/tool/requestUserInput",
+              turnId: "turn",
+              summary: "Codex requests input",
+            },
+          ]
+        : [],
       output: "Browser test fixture output.",
     }),
     enqueue: () => {
@@ -182,6 +192,18 @@ test("operator controls use actor-scoped API routes and separate interrupt from 
     page.getByText("No running background terminals were reported for this session."),
   ).toBeVisible();
   expect(calls).toEqual(["input", "steer", "interrupt", "terminate:native-terminal"]);
+  pendingForm = true;
+  await page.reload();
+  await page.getByRole("button", { name: "Toggle Sidebar" }).click();
+  await page.getByRole("button", { name: "Actors", exact: true }).click();
+  await page.keyboard.press("Escape");
+  await page.getByRole("button", { name: bootstrap.actorId, exact: true }).click();
+  await expect(
+    page.getByText(
+      /the designated Form when available; otherwise follow the native input recovery notice/,
+    ),
+  ).toBeVisible();
+  await screenshot(page, "mobile-native-form-fixture");
 });
 test("mobile navigation and setup remain reachable without clipping", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });

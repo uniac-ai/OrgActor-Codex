@@ -10,6 +10,7 @@
       "!evidence",
       "!test-results",
       "!playwright-report",
+      "!test/fixtures/native-input",
       "!web/src/components/ui"
     ]
   },
