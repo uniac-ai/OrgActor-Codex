@@ -67,10 +67,15 @@ export class SessionMcpBridge {
       const tool = actor.hub.tools.find((t) => t.name === params.name);
       if (!tool) throw new McpError(ErrorCode.InvalidParams, "This Actor has no such interface.");
       const thread = params._meta?.threadId;
-      if (typeof thread !== "string" || thread !== bootstrap.threadId)
+      if (typeof thread !== "string" || !thread || thread !== bootstrap.threadId)
         throw new McpError(
           ErrorCode.InvalidParams,
           "This bridge belongs to another native thread.",
+        );
+      if (!actor.matchesToolCall(params._meta, params.name))
+        throw new McpError(
+          ErrorCode.InvalidParams,
+          "This bridge requires the current native session and tool call.",
         );
       const meta = tool._meta?.["agentorg/tool"] as any;
       if (

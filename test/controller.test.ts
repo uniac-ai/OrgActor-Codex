@@ -77,59 +77,6 @@ function fixture(t: any) {
     },
   };
 }
-test("advertised controls are run/status/steer/interrupt and reject forged caller authority", async (t) => {
-  const f = fixture(t);
-  const entries = f.actor.exposures();
-  assert.deepEqual(
-    entries.map((e) => e.tool.name),
-    ["run", "status", "steer", "interrupt"],
-  );
-  assert.equal(entries[0].tool.execution?.taskSupport, "required");
-  await assert.rejects(
-    entries[0].handle(
-      { text: "I am root" },
-      { id: "call", from: "stranger", cause: null, signal: new AbortController().signal },
-    ),
-    (e: any) => e.code === "FORBIDDEN",
-  );
-  assert.equal(f.starts.length, 0);
-});
-test("cancellation while bridge readiness is held never starts native work", async (t) => {
-  const f = fixture(t);
-  const held = deferred<boolean>();
-  f.adapter.bridgeReady = () => held.promise;
-  const cancel = new AbortController();
-  const result = f.actor
-    .exposures()[0]
-    .handle({ text: "task" }, { id: "call", from: "manager", cause: null, signal: cancel.signal });
-  await new Promise(setImmediate);
-  cancel.abort();
-  await result;
-  held.resolve(true);
-  await new Promise(setImmediate);
-  assert.equal(f.starts.length, 0);
-});
-test("cancellation during native start interrupts only its correlated turn after reply", async (t) => {
-  const f = fixture(t);
-  const held = deferred<string>();
-  f.adapter.start = async (...args: any[]) => {
-    f.starts.push(args);
-    return held.promise;
-  };
-  const cancel = new AbortController();
-  const result = f.actor
-    .exposures()[0]
-    .handle({ text: "task" }, { id: "call", from: "manager", cause: null, signal: cancel.signal });
-  const rejected = assert.rejects(result);
-  await new Promise(setImmediate);
-  cancel.abort();
-  await rejected;
-  f.event("turn/completed", { turn: { id: "foreign", status: "completed", items: [] } });
-  assert.equal(f.bootstrap.submissions[0].result, undefined);
-  held.resolve("turn-owned");
-  await new Promise(setImmediate);
-  assert.deepEqual(f.interrupts, ["turn-owned"]);
-});
 test("recovery uses native clientId, never caller text or foreign completion", async (t) => {
   const f = fixture(t);
   f.actor.adapter = undefined;
@@ -164,7 +111,7 @@ test("recovery uses native clientId, never caller text or foreign completion", a
   });
   assert.equal(f.bootstrap.submissions[0].result?.output, "actual");
 });
-test("steered Hub inputs retain provenance; mixed native-applied inputs do not guess a cause", async (t) => {
+test("local steering retains input provenance; mixed native-applied inputs do not guess a cause", async (t) => {
   const f = fixture(t);
   f.actor.adapter = undefined;
   const run = f.actor.enqueue("run", "first", "manager", "call-run");
@@ -177,15 +124,7 @@ test("steered Hub inputs retain provenance; mixed native-applied inputs do not g
     item: { type: "userMessage", clientId: "run" },
   });
   assert.equal(f.actor.currentCause(), "call-run");
-  await f.actor.exposures()[2].handle(
-    { turnId: "turn-owned", text: "second" },
-    {
-      id: "call-steer",
-      from: "manager",
-      cause: "upstream",
-      signal: new AbortController().signal,
-    },
-  );
+  await f.actor.steer("call-steer", "turn-owned", "second", "manager", "call-steer");
   assert.equal(f.bootstrap.submissions[1].cause, "call-steer");
   f.event("item/completed", {
     turnId: "turn-owned",

@@ -32,13 +32,15 @@ Open `http://localhost:8787/` directly. The compose service publishes only on lo
 1. In **Setup**, choose SSH first for a container deployment. Supply the target host, port, user, private key and a verified known-host entry. SSH uses strict host verification and the existing host's `codex app-server proxy`. The host must already run the app server used by Codex Desktop. Co-located mode accepts an existing `unix:///absolute/socket/path`, loopback WebSocket or TLS WebSocket listener.
 2. Set the exact workspace root saved in Codex Desktop's SSH connection or local project. Set the container MCP address as reachable **from the Codex host**, including `/mcp`. For a remote machine, arrange a protected network route or SSH reverse forwarding to this container; loopback addresses refer to each machine's own network namespace. On Docker Desktop, the SSH host may be `host.docker.internal` with its corresponding verified known-host entry.
 3. Check the backend and account. Authentication uses the backend's existing ChatGPT sign-in and plan quota. **Start sign-in** is an explicit operator action with one login owner. Quota unavailable and quota denied are separate observations. Native session creation uses read-only sandboxing and on-request approvals.
-4. Enroll the Provider in your Hub and supply its server-side binding before launch. **Check admission** shares the active Provider's existing connection owner. Pause or resume provisioning from the Provider page. Hub integration targets the contracts in AgentOrg PR 52 and PR 53; see [architecture](docs/architecture.md).
+4. Enroll the Provider in your Hub and supply its server-side binding before launch. **Check admission** shares the active Provider's existing connection owner. Pause or resume provisioning from the Provider page. The Provider serves its factory RPC while each Actor consumes the Hub's exposed Tools; see [architecture](docs/architecture.md).
 5. In your Hub, create an Actor with `execution: {providerId, config: {}}`, or choose **Attach Actor** with an existing Hub-issued identity and credential. Optional execution config selects `model` and `approvalAuthority` (`desktop` or `hub`). Each Actor admits itself independently.
 6. Open that session in Codex Desktop using the saved workspace root. Confirm the attached session ID in Setup after you see it. This records an explicit operator observation tied to the workspace and configuration revision. Backend mapping checks alone leave the Desktop step unconfirmed.
 
 The bridge check uses thread-specific native MCP discovery after an Actor is attached. Before attachment it can perform a read-only connectivity challenge from the backend; sandbox rejection of that command is reported separately. Model work waits for the real Actor MCP catalog. Factory success confirms native setup and private bootstrap handoff, independently of Actor admission and model activity.
 
 ## Operate
+
+Actors expose no remote execution/control Tools. Start native work from the local console, or let the Actor's local policy read its Hub inbox and accept a message. Native sessions belong to this executor's implementation; the Hub manages Actor identity independently. Duplicate inbox messages retain one accepted input, and uncertain native outcomes require reconciliation.
 
 **Pause connection** disconnects that Actor executor; it preserves the native session and any running work. **Interrupt** requests cancellation of its named active turn. **Background terminals** lists and stops registered terminals belonging to that native session. Reconnect resumes the same private session binding and reconciles native user-message IDs without replaying unknown work. Replaced or revoked connections require an explicit operator resume.
 
@@ -54,7 +56,7 @@ npm test
 npm run test:browser
 ```
 
-CI pins Node 22.22.0 and 24.22.1; browser and container checks run on Node 24. Real model integration is opt-in and uses an isolated Hub built at the reviewed revision:
+CI pins Node 22.22.0 and 24.22.1; browser and container checks run on Node 24. The compatibility change still needs its updated public Hub checkpoint; the real harness's retained older revision does not establish that compatibility. Once that checkpoint is integrated and a real run is authorized, model integration is opt-in and uses an isolated Hub built at the reviewed revision:
 
 ```sh
 HUB_ROOT=/absolute/path/to/reviewed-hub \

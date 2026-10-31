@@ -42,7 +42,7 @@ const hub = await startCore(database, {
   providers: [{ providerId, credentialHash: hash(providerCredential) }],
 });
 const rootIdentity = await hub.organization.registry.createRoot();
-const root = new ActorHubSession(hub.url, []);
+const root = new ActorHubSession(hub.url);
 const module = await startServer({
   root: join(owned, "runtime"),
   port: 0,
@@ -207,24 +207,11 @@ try {
   }));
   assert.ok(actorTools.some((t) => (t._meta?.["agentorg/tool"] as any)?.id === "hub:activity"));
   if (!setupOnly) {
-    await root.refreshTools();
-    const runAlias = root.tools.find(
-      (t) => (t._meta?.["agentorg/tool"] as any)?.interface === "run",
-    )?.name;
-    assert.ok(runAlias);
-    const reply = await root.call(runAlias, {
-      text: "Use the org MCP team and activity tools once each, then reply exactly ORGACTOR_MCP_OK. Do not run commands or modify files.",
-    });
-    const receipt = (reply._meta?.["agentorg/call"] as any)?.id;
-    if (receipt)
-      await until(
-        "Hub execution result",
-        async () =>
-          (await root.call(root.alias("hub:calls", "call_result"), { call: receipt, wait: 5 }))
-            .structuredContent as any,
-        (r) => r.state === "done",
-        120_000,
-      );
+    const inputId = `operator:${randomUUID()}`;
+    actor.enqueue(
+      inputId,
+      "Use the org MCP team and activity tools once each, then reply exactly ORGACTOR_MCP_OK. Do not run commands or modify files.",
+    );
     await until(
       "Native model output",
       () => actor.snapshot().output,
@@ -237,8 +224,7 @@ try {
     evidence.nativeRoundtrip = {
       marker: "ORGACTOR_MCP_OK",
       dispatchedCalls: module.bridge.requests,
-      nativeTurnStatus:
-        bootstrap.submissions.find((s) => s.id === receipt)?.result?.status ?? "completed",
+      nativeTurnStatus: bootstrap.submissions.find((s) => s.id === inputId)?.result?.status,
     };
     save();
     actor.enqueue(

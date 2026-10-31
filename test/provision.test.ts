@@ -29,6 +29,7 @@ const tool = (id: string, name: string, alias: string) => ({
 const tools = [
   tool("hub:team", "team", "team_alias"),
   tool("hub:messages", "messages", "inbox_alias"),
+  tool("hub:messages", "message_read", "read_alias"),
 ];
 async function until(description: string, read: () => boolean) {
   for (let i = 0; i < 500; i++) {
@@ -55,8 +56,9 @@ for (const mode of ["fresh", "unknown", "offline", "rejected", "lost"])
       mcpError: undefined as unknown,
       actorClosed: false,
       providerReply: undefined as any,
-      runReply: undefined as any,
-      earlyReply: undefined as any,
+      inboxDeliveries: 0,
+      inboxReads: 0,
+      hubMethods: [] as string[],
       actorAdmissions: 0,
       causes: [] as (string | undefined)[],
     };
@@ -66,9 +68,11 @@ for (const mode of ["fresh", "unknown", "offline", "rejected", "lost"])
     let preparedActor!: ActorController;
     let preparedHub: ActorController["hub"];
     let startReplied = false;
+    let deliverInbox: (() => void) | undefined;
     const mcp = new Client({ name: "mock-native", version: "1" });
     const metadata = () => ({
       id: "fresh-native",
+      sessionId: "fresh-session",
       historyMode: "legacy",
       status: { type: "idle" },
       preview: "",
@@ -80,6 +84,7 @@ for (const mode of ["fresh", "unknown", "offline", "rejected", "lost"])
     hub.on("connection", (socket) =>
       socket.on("message", (raw) => {
         const m = JSON.parse(String(raw));
+        if (socket === actorSocket && m.method) state.hubMethods.push(m.method);
         const respond = (result: any) =>
           socket.send(JSON.stringify({ jsonrpc: "2.0", id: m.id, result }));
         if (m.method === "connection.connect") {
@@ -97,26 +102,14 @@ for (const mode of ["fresh", "unknown", "offline", "rejected", "lost"])
           }
           if (m.params.actorId && mode === "offline") return;
           respond({ connectionId: m.params.actorId ? "actor-peer" : "provider-peer" });
-          if (m.params.actorId)
-            socket.send(
-              JSON.stringify({
-                jsonrpc: "2.0",
-                id: "reverse-init",
-                method: "initialize",
-                params: {
-                  protocolVersion: "2025-11-25",
-                  capabilities: {},
-                  clientInfo: { name: "mock-hub", version: "1" },
-                },
-              }),
-            );
-        } else if (m.method === "initialize")
+        } else if (m.method === "initialize") {
+          assert.deepEqual(m.params.capabilities, {});
           respond({
             protocolVersion: m.params.protocolVersion,
             capabilities: { tools: {} },
             serverInfo: { name: "mock-hub", version: "1" },
           });
-        else if (m.method === "tools/list") respond({ tools });
+        } else if (m.method === "tools/list") respond({ tools });
         else if (m.method === "tools/call" && m.params.name === "team_alias") {
           state.causes.push(m.params._meta?.["agentorg/cause"]);
           const value = { root: "root", positions: [{ id: "fresh-actor", manager: "root" }] };
@@ -124,9 +117,25 @@ for (const mode of ["fresh", "unknown", "offline", "rejected", "lost"])
             content: [{ type: "text", text: JSON.stringify(value) }],
             structuredContent: value,
           });
+        } else if (m.method === "tools/call" && m.params.name === "inbox_alias") {
+          assert.deepEqual(m.params.arguments, { unread: true, limit: 200, wait: 20 });
+          const deliver = () => {
+            state.inboxDeliveries++;
+            respond({
+              content: [],
+              structuredContent: {
+                messages: [{ id: "inbox-message", text: "Mock first input", from: "root" }],
+                cursor: 1,
+              },
+            });
+          };
+          if (!state.inboxDeliveries) deliverInbox = deliver;
+          else if (state.inboxDeliveries === 1) deliver();
+        } else if (m.method === "tools/call" && m.params.name === "read_alias") {
+          assert.deepEqual(m.params.arguments, { ids: ["inbox-message"] });
+          state.inboxReads++;
+          respond({ content: [], structuredContent: {} });
         } else if (m.id === "create") state.providerReply = m;
-        else if (m.id === "run") state.runReply = m;
-        else if (m.id === "early") state.earlyReply = m;
       }),
     );
     native.on("connection", (socket) =>
@@ -177,27 +186,24 @@ for (const mode of ["fresh", "unknown", "offline", "rejected", "lost"])
             )
             .then(() => mcp.listTools())
             .then(async (list) => {
-              assert.equal(list.tools.length, 2);
+              assert.equal(list.tools.length, 3);
               assert.equal(startReplied, false);
               assert.equal(preparedActor.hubReady, true);
               assert.equal(preparedActor.bootstrap.threadId, "");
               assert.equal(runtime.actors.get("fresh-actor"), preparedActor);
               assert.equal(preparedActor.hub, preparedHub);
-              actorSocket.send(
-                JSON.stringify({
-                  jsonrpc: "2.0",
-                  id: "early",
-                  method: "tools/call",
-                  params: {
-                    name: "run",
-                    arguments: { text: "Before binding" },
-                    _meta: { "agentorg/call": { id: "early-input", from: "root", cause: null } },
-                  },
-                }),
+              await assert.rejects(
+                mcp.callTool({ name: "team_alias", arguments: {}, _meta: { threadId: "" } }),
+                /another native thread/,
               );
-              await until("Pre-binding Hub input is rejected", () => !!state.earlyReply);
-              assert.equal(state.earlyReply.result.isError, true);
-              assert.match(state.earlyReply.result.content[0].text, /NATIVE_BINDING_PENDING/);
+              assert.deepEqual(state.causes, []);
+              const early = await fetch(`${runtime.url}/api/actors/fresh-actor/inputs`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ inputId: "before-binding", text: "Before binding" }),
+              });
+              assert.equal(early.status, 503);
+              assert.equal(((await early.json()) as any).error.code, "NATIVE_BINDING_PENDING");
               assert.equal(preparedActor.bootstrap.submissions.length, mode === "unknown" ? 1 : 0);
               state.mcpReady = true;
               if (mode === "rejected" || mode === "lost") {
@@ -238,6 +244,9 @@ for (const mode of ["fresh", "unknown", "offline", "rejected", "lost"])
         else if (m.method === "account/rateLimits/read") respond({ ordinaryUsageAllowed: true });
         else if (m.method === "turn/start") {
           assert.equal(socket, creatingSocket);
+          assert.equal(m.params.clientUserMessageId, "message:inbox-message");
+          assert.match(m.params.input[0].text, /Origin: Hub Actor root/);
+          assert.equal(preparedActor.snapshot().observation, "available");
           state.materialized = true;
           respond({ turn: { id: "mock-turn" } });
           socket.send(
@@ -256,8 +265,31 @@ for (const mode of ["fresh", "unknown", "offline", "rejected", "lost"])
               },
             }),
           );
+          socket.send(
+            JSON.stringify({
+              method: "item/started",
+              params: {
+                threadId: "fresh-native",
+                turnId: "mock-turn",
+                item: {
+                  id: "native-tool-call",
+                  type: "mcpToolCall",
+                  server: "org",
+                  tool: "team_alias",
+                },
+              },
+            }),
+          );
           void mcp
-            .callTool({ name: "team_alias", arguments: {}, _meta: { threadId: "fresh-native" } })
+            .callTool({
+              name: "team_alias",
+              arguments: {},
+              _meta: {
+                threadId: "fresh-native",
+                sessionId: "fresh-session",
+                callId: "native-tool-call",
+              },
+            })
             .then(() => {
               socket.send(
                 JSON.stringify({
@@ -275,6 +307,9 @@ for (const mode of ["fresh", "unknown", "offline", "rejected", "lost"])
                   },
                 }),
               );
+            })
+            .catch((e) => {
+              state.mcpError = e;
             });
         } else error(-32601, "Unexpected native operation");
       }),
@@ -411,23 +446,35 @@ for (const mode of ["fresh", "unknown", "offline", "rejected", "lost"])
       false,
     );
     assert.equal(runtime.store.data.actors["fresh-actor"].submissions.length, 0);
-    actorSocket.send(
-      JSON.stringify({
-        jsonrpc: "2.0",
-        id: "run",
-        method: "tools/call",
-        params: {
-          name: "run",
-          arguments: { text: "Mock first input" },
-          _meta: { "agentorg/call": { id: "mock-call", from: "root", cause: null } },
-        },
-      }),
+    await until("Actor reads its own Hub inbox", () => !!deliverInbox);
+    deliverInbox?.();
+    await until(
+      "Locally chosen native turn settles and duplicate inbox delivery is acknowledged",
+      () =>
+        runtime.store.data.actors["fresh-actor"].submissions[0]?.state === "done" &&
+        state.inboxReads === 2,
     );
-    await until("Native owner notifications settle the actual Hub run", () => !!state.runReply);
-    assert.equal(state.runReply.result.structuredContent.status, "completed");
-    assert.equal(state.runReply.result.structuredContent.output, "MOCK_COMPLETE");
-    assert.ok(state.causes.includes("mock-call"));
+    const input = runtime.store.data.actors["fresh-actor"].submissions[0];
+    assert.equal(input.result?.status, "completed");
+    assert.equal(input.result?.output, "MOCK_COMPLETE");
+    assert.equal(input.from, "root");
+    assert.equal(input.id, "message:inbox-message");
     assert.equal(state.calls.filter((m) => m === "turn/start").length, 1);
-    assert.equal(runtime.store.data.actors["fresh-actor"].submissions[0].state, "done");
+    assert.equal(runtime.store.data.actors["fresh-actor"].submissions.length, 1);
+    assert.deepEqual(state.causes, [undefined]);
+    await assert.rejects(
+      mcp.callTool({
+        name: "team_alias",
+        arguments: {},
+        _meta: { threadId: "fresh-native", sessionId: "fresh-session", callId: "native-tool-call" },
+      }),
+      /current native session and tool call/,
+    );
+    assert.deepEqual(state.causes, [undefined]);
+    assert.ok(
+      state.hubMethods.every((m) =>
+        ["initialize", "notifications/initialized", "tools/list", "tools/call"].includes(m),
+      ),
+    );
     assert.equal(JSON.stringify(actor.snapshot()).includes("SECRET_SENTINEL"), false);
   });

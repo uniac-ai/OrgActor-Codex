@@ -1,27 +1,10 @@
 import { EventEmitter } from "node:events";
-import type { Tool } from "@modelcontextprotocol/sdk/types.js";
-import { z } from "zod";
 import type { CodexAdapter, NativeEvent } from "../codex/index.js";
-import { ActorHubSession, type Exposure, type Incoming } from "../hub/actor.js";
+import { ActorHubSession } from "../hub/actor.js";
 import { type ActorSnapshot, Fault } from "../management/schema.js";
 import type { Bootstrap, RuntimeStore, Submission } from "../runtime/index.js";
 import { requestReview, responseFor, supportedRequests } from "./requests.js";
 
-const Text = z.string().trim().min(1).max(20_000);
-const Run = z.strictObject({ text: Text });
-const Steering = Run.extend({ turnId: z.string().min(1) });
-const Interrupt = z.strictObject({ turnId: z.string().min(1) });
-const resultSchema = {
-  type: "object",
-  properties: {
-    inputId: { type: "string" },
-    turnId: { type: "string" },
-    status: { enum: ["completed", "interrupted", "failed"] },
-    output: { type: "string" },
-  },
-  required: ["inputId", "turnId", "status", "output"],
-  additionalProperties: false,
-} as const;
 type PendingRequest = { id: string | number; method: string; params: any; questionId?: string };
 export class ActorController extends EventEmitter {
   hub?: ActorHubSession;
@@ -40,6 +23,8 @@ export class ActorController extends EventEmitter {
   private hubOpening?: Promise<void>;
   private nativeOpening?: Promise<void>;
   private nativeOpened = false;
+  private sessionId?: string;
+  private toolCalls = new Map<string, { turnId: string; tool: string }>();
   constructor(
     readonly bootstrap: Bootstrap,
     private store: RuntimeStore,
@@ -81,129 +66,10 @@ export class ActorController extends EventEmitter {
       output: this.output,
     };
   }
-  exposures(): Exposure[] {
-    const tool = (
-      name: string,
-      inputSchema: any,
-      outputSchema: any,
-      readOnly = false,
-      long = false,
-    ): Tool => ({
-      name,
-      description: {
-        run: "Run a task in this Codex Actor. Returns the completed native turn. Work submitted while busy queues.",
-        status: "Read this executor's current session and work observation.",
-        steer:
-          "Append input to the named active turn. The authenticated caller remains attached to this input.",
-        interrupt:
-          "Request interruption of the named turn. Background terminal cleanup is a separate operator action.",
-      }[name],
-      inputSchema,
-      outputSchema,
-      annotations: { readOnlyHint: readOnly },
-      ...(long ? { execution: { taskSupport: "required" } } : {}),
-    });
-    return [
-      {
-        tool: tool("run", z.toJSONSchema(Run), resultSchema, false, true),
-        handle: async (input, call) => {
-          await this.authorize(call);
-          const { text } = Run.parse(input);
-          const submission = this.enqueue(call.id, text, call.from, call.id);
-          const cancel = () => {
-            submission.cancelRequested = true;
-            this.store.save();
-            if (submission.state === "queued") {
-              submission.state = "done";
-              submission.result = {
-                inputId: submission.id,
-                turnId: "",
-                status: "interrupted",
-                output: "",
-              };
-              this.store.save();
-              this.emit("result");
-            } else if (submission.turnId && this.turnId === submission.turnId)
-              void this.adapter
-                ?.interrupt(this.bootstrap.threadId, submission.turnId)
-                .catch(() => {});
-          };
-          call.signal.addEventListener("abort", cancel, { once: true });
-          try {
-            if (call.signal.aborted) cancel();
-            return await this.result(submission, call.signal);
-          } finally {
-            call.signal.removeEventListener("abort", cancel);
-          }
-        },
-      },
-      {
-        tool: tool(
-          "status",
-          { type: "object", properties: {}, additionalProperties: false },
-          {
-            type: "object",
-            properties: {
-              connected: { type: "boolean" },
-              observation: { enum: ["available", "unavailable"] },
-              threadId: { type: "string" },
-              turnId: { type: ["string", "null"] },
-              queued: { type: "integer" },
-              requests: { type: "integer" },
-            },
-            required: ["connected", "observation", "threadId", "turnId", "queued", "requests"],
-            additionalProperties: false,
-          },
-          true,
-        ),
-        handle: async (input) => {
-          z.strictObject({}).parse(input);
-          const s = this.snapshot();
-          return {
-            connected: s.connected,
-            observation: s.observation,
-            threadId: s.threadId,
-            turnId: s.turnId,
-            queued: s.queued,
-            requests: s.requests.length,
-          };
-        },
-      },
-      {
-        tool: tool("steer", z.toJSONSchema(Steering), {
-          type: "object",
-          properties: {
-            inputId: { type: "string" },
-            turnId: { type: "string" },
-            status: { enum: ["accepted", "unknown"] },
-          },
-          required: ["inputId", "turnId", "status"],
-          additionalProperties: false,
-        }),
-        handle: async (input, call) => {
-          await this.authorize(call);
-          const data = Steering.parse(input);
-          return this.steer(call.id, data.turnId, data.text, call.from, call.id);
-        },
-      },
-      {
-        tool: tool("interrupt", z.toJSONSchema(Interrupt), {
-          type: "object",
-          properties: { turnId: { type: "string" }, requested: { const: true } },
-          required: ["turnId", "requested"],
-          additionalProperties: false,
-        }),
-        handle: async (input, call) => {
-          await this.authorize(call);
-          return this.interrupt(Interrupt.parse(input).turnId);
-        },
-      },
-    ];
-  }
   async open(): Promise<void> {
     if (this.stopped) return;
     if (!this.hubOpening) {
-      const hub = new ActorHubSession(this.bootstrap.hubUrl, this.exposures());
+      const hub = new ActorHubSession(this.bootstrap.hubUrl);
       this.hub = hub;
       hub.connection.once("closed", () => this.emit("disconnected"));
       this.hubOpening = hub.open(this.bootstrap.actorId, this.bootstrap.credential).then(() => {
@@ -239,17 +105,6 @@ export class ActorController extends EventEmitter {
     this.lastError = undefined;
     void this.pump();
     void this.watchInbox();
-  }
-  private async authorize(call: Incoming): Promise<void> {
-    const team = await this.hub?.call(this.hub.alias("hub:team", "team"), { depth: 0 });
-    const value = team?.structuredContent as any;
-    const self = value?.positions?.find((p: any) => p.id === this.bootstrap.actorId);
-    if (!value?.root || !self || ![value.root, self.manager].includes(call.from))
-      throw new Fault(
-        "FORBIDDEN",
-        "Only this Actor's manager or the organizational root may control its execution.",
-        403,
-      );
   }
   enqueue(id: string, text: string, from = "operator", cause: string | null = null): Submission {
     if (!this.bootstrap.threadId || (this.hubOpening && !this.nativeOpened))
@@ -313,7 +168,6 @@ export class ActorController extends EventEmitter {
         submission.result = { inputId: id, turnId, status: "failed", output: e.message };
         this.lastError = e.message;
         this.store.save();
-        this.emit("result");
         throw e;
       }
       if (submission.applied) return { inputId: id, turnId, status: "accepted" };
@@ -387,7 +241,6 @@ export class ActorController extends EventEmitter {
           status: "failed",
           output: "Codex refused the submitted turn.",
         };
-        this.emit("result");
       } else {
         next.state = "unknown";
         this.lastError =
@@ -399,28 +252,13 @@ export class ActorController extends EventEmitter {
       if (next.result) void this.pump();
     }
   }
-  private result(submission: Submission, signal: AbortSignal): Promise<Record<string, unknown>> {
-    return new Promise((resolve, reject) => {
-      const check = () => {
-        if (submission.result) {
-          cleanup();
-          resolve(submission.result);
-        } else if (signal.aborted || this.stopped) {
-          cleanup();
-          reject(new Fault("CALL_CANCELLED", "The execution call is no longer being observed."));
-        }
-      };
-      const cleanup = () => {
-        this.off("result", check);
-        signal.removeEventListener("abort", check);
-      };
-      this.on("result", check);
-      signal.addEventListener("abort", check, { once: true });
-      check();
-    });
-  }
   async reconcile(): Promise<void> {
     const read = await this.adapter?.read(this.bootstrap.threadId);
+    this.toolCalls.clear();
+    this.sessionId =
+      read?.thread?.id === this.bootstrap.threadId && typeof read.thread.sessionId === "string"
+        ? read.thread.sessionId
+        : undefined;
     const turns: any[] = read?.thread?.turns ?? [];
     this.observedAt = new Date().toISOString();
     const active = turns.find((t) => t.status === "inProgress");
@@ -453,6 +291,8 @@ export class ActorController extends EventEmitter {
   }
   private observe(event: NativeEvent): void {
     if (event.method === "connection/closed") {
+      this.sessionId = undefined;
+      this.toolCalls.clear();
       this.emit("disconnected");
       return;
     }
@@ -462,8 +302,14 @@ export class ActorController extends EventEmitter {
     this.observedAt = new Date().toISOString();
     if (event.method === "turn/started") {
       this.turnId = p.turn.id;
+      this.toolCalls.clear();
       this.appliedInputs.clear();
       this.output = "";
+    }
+    if (p.item?.type === "mcpToolCall" && p.item.server === "org" && p.turnId === this.turnId) {
+      if (event.method === "item/started")
+        this.toolCalls.set(p.item.id, { turnId: p.turnId, tool: p.item.tool });
+      if (event.method === "item/completed") this.toolCalls.delete(p.item.id);
     }
     if (
       ["item/started", "item/completed"].includes(event.method) &&
@@ -485,6 +331,7 @@ export class ActorController extends EventEmitter {
     if (event.method === "item/agentMessage/delta")
       this.output = (this.output + (p.delta ?? "")).slice(-100_000);
     if (event.method === "turn/completed") {
+      if (this.turnId === p.turn.id) this.toolCalls.clear();
       this.finish(p.turn);
       if (this.turnId === p.turn.id) this.turnId = null;
       for (const [id, request] of this.requests)
@@ -544,7 +391,6 @@ export class ActorController extends EventEmitter {
     }
     this.output = output;
     this.store.save();
-    this.emit("result");
   }
   private async routeApproval(id: string): Promise<void> {
     const request = this.requests.get(id);
@@ -741,13 +587,26 @@ export class ActorController extends EventEmitter {
       )?.cause ?? null
     );
   }
+  matchesToolCall(meta: Record<string, unknown> | undefined, tool: string): boolean {
+    const call = typeof meta?.callId === "string" ? this.toolCalls.get(meta.callId) : undefined;
+    return (
+      !this.stopped &&
+      !!this.bootstrap.threadId &&
+      !!this.sessionId &&
+      meta?.sessionId === this.sessionId &&
+      meta?.threadId === this.bootstrap.threadId &&
+      !!this.turnId &&
+      call?.turnId === this.turnId &&
+      call.tool === tool
+    );
+  }
   async close(): Promise<void> {
     this.stopped = true;
     this.hubReady = false;
+    this.toolCalls.clear();
     this.unwatch?.();
     this.unwatch = undefined;
     this.requests.clear();
-    this.emit("result");
     await this.hub?.close();
     this.hub = undefined;
     this.adapter = undefined;

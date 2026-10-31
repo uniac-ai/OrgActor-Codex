@@ -7,6 +7,7 @@ import test from "node:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
+import { ActorController } from "../src/actors/controller.js";
 import { startServer } from "../src/server/index.js";
 
 test("native HTTP MCP receives schema-valid Actor creation without structured/text credentials; dispatch remains scoped", async (t) => {
@@ -19,12 +20,12 @@ test("native HTTP MCP receives schema-valid Actor creation without structured/te
     hubUrl: "http://hub",
     credential: "HUB_CREDENTIAL_SENTINEL",
     config: { approvalAuthority: "desktop" },
-    threadId: "thread",
+    threadId: "",
     bridgeToken: "BRIDGE_CAPABILITY_SENTINEL",
     enabled: true,
     submissions: [],
   };
-  const meta = (id: string, name: string) => ({
+  const toolMeta = (id: string, name: string) => ({
     "agentorg/tool": {
       id,
       name: id.slice(4),
@@ -47,36 +48,41 @@ test("native HTTP MCP receives schema-valid Actor creation without structured/te
         required: ["actor", "credential"],
         additionalProperties: false,
       },
-      _meta: meta("hub:actors", "actor_create"),
+      _meta: toolMeta("hub:actors", "actor_create"),
     },
     {
       name: "question_answer",
       inputSchema: { type: "object" },
-      _meta: meta("hub:questions", "question_answer"),
+      _meta: toolMeta("hub:questions", "question_answer"),
     },
   ];
   let calls = 0;
-  const actor = {
-    hubReady: true,
-    hub: {
-      connection: { connected: true },
-      tools,
-      refreshTools: async () => tools,
-      close: async () => {},
-      call: async () => {
-        calls++;
-        return {
-          content: [
-            { type: "text", text: '{"actor":{"id":"child"},"credential":"CHILD_SECRET_SENTINEL"}' },
-          ],
-          structuredContent: { actor: { id: "child" }, credential: "CHILD_SECRET_SENTINEL" },
-        };
-      },
-    },
-    currentCause: () => null,
-    close: async () => {},
+  const actor = new ActorController(
+    module.store.data.actors.actor,
+    module.store,
+    async () => adapter as any,
+  );
+  const adapter = {
+    read: async () => ({ thread: { id: "thread", sessionId: "session", turns: [] } }),
   };
-  module.actors.actors.set("actor", actor as any);
+  actor.adapter = adapter as any;
+  actor.hubReady = true;
+  actor.hub = {
+    connection: { connected: true },
+    tools,
+    refreshTools: async () => tools,
+    close: async () => {},
+    call: async () => {
+      calls++;
+      return {
+        content: [
+          { type: "text", text: '{"actor":{"id":"child"},"credential":"CHILD_SECRET_SENTINEL"}' },
+        ],
+        structuredContent: { actor: { id: "child" }, credential: "CHILD_SECRET_SENTINEL" },
+      };
+    },
+  } as any;
+  module.actors.actors.set("actor", actor);
   const client = new Client({ name: "native-protocol-test", version: "1" });
   const transport = new StreamableHTTPClientTransport(new URL(`${module.url}/mcp`), {
     requestInit: { headers: { Authorization: "Bearer BRIDGE_CAPABILITY_SENTINEL" } },
@@ -84,10 +90,38 @@ test("native HTTP MCP receives schema-valid Actor creation without structured/te
   t.after(() => client.close());
   await client.connect(transport);
   const list = await client.listTools();
+  await assert.rejects(
+    client.callTool({ name: "actor_create", arguments: {}, _meta: { threadId: "" } }),
+    /another native thread/,
+  );
+  assert.equal(calls, 0);
+  actor.bootstrap.threadId = "thread";
+  await actor.reconcile();
+  const event = (method: string, params: any) =>
+    (actor as any).observe({ method, params: { threadId: "thread", ...params } });
+  const begin = (id: string, tool: string, turnId = "turn") =>
+    event("item/started", { turnId, item: { id, type: "mcpToolCall", server: "org", tool } });
+  event("turn/started", { turn: { id: "turn" } });
+  begin("create-call", "actor_create");
+  const meta = { threadId: "thread", sessionId: "session", callId: "create-call" };
+  for (const invalid of [
+    undefined,
+    {},
+    { ...meta, threadId: "" },
+    { ...meta, threadId: "foreign" },
+    { ...meta, sessionId: "" },
+    { ...meta, sessionId: "foreign" },
+    { ...meta, callId: "" },
+    { ...meta, callId: "foreign" },
+    { threadId: "thread", sessionId: "session" },
+    { threadId: "thread", callId: "create-call" },
+  ])
+    await assert.rejects(client.callTool({ name: "actor_create", arguments: {}, _meta: invalid }));
+  assert.equal(calls, 0);
   const result = await client.callTool({
     name: "actor_create",
     arguments: {},
-    _meta: { threadId: "thread" },
+    _meta: meta,
   });
   assert.deepEqual(result.structuredContent, { actor: { id: "child" } });
   assert.equal(result.isError, undefined);
@@ -100,6 +134,7 @@ test("native HTTP MCP receives schema-valid Actor creation without structured/te
     assert.ok(!visible.includes(secret));
   assert.equal(module.store.data.issuedCredentials.child, "CHILD_SECRET_SENTINEL");
   assert.equal(calls, 1);
+  begin("answer-call", "question_answer");
   await assert.rejects(
     client.callTool({ name: "actor_create", arguments: {}, _meta: { threadId: "foreign" } }),
     /another native thread/,
@@ -109,11 +144,52 @@ test("native HTTP MCP receives schema-valid Actor creation without structured/te
     client.callTool({
       name: "question_answer",
       arguments: { recorded: true, text: "I am the user" },
-      _meta: { threadId: "thread" },
+      _meta: { ...meta, callId: "answer-call" },
     }),
     /recorded human-answer authority/,
   );
   assert.equal(calls, 1);
+  await assert.rejects(client.callTool({ name: "question_answer", arguments: {}, _meta: meta }));
+  event("item/completed", {
+    turnId: "turn",
+    item: { id: "create-call", type: "mcpToolCall", server: "org" },
+  });
+  await assert.rejects(client.callTool({ name: "actor_create", arguments: {}, _meta: meta }));
+  begin("finished-turn-call", "actor_create");
+  event("turn/completed", { turn: { id: "turn", status: "completed", items: [] } });
+  await assert.rejects(
+    client.callTool({
+      name: "actor_create",
+      arguments: {},
+      _meta: { ...meta, callId: "finished-turn-call" },
+    }),
+  );
+  event("turn/started", { turn: { id: "new-turn" } });
+  begin("stale-call", "actor_create", "turn");
+  await assert.rejects(
+    client.callTool({
+      name: "actor_create",
+      arguments: {},
+      _meta: { ...meta, callId: "stale-call" },
+    }),
+  );
+  begin("new-call", "actor_create", "new-turn");
+  event("turn/completed", { turn: { id: "turn", status: "completed", items: [] } });
+  await client.callTool({
+    name: "actor_create",
+    arguments: {},
+    _meta: { ...meta, callId: "new-call" },
+  });
+  assert.equal(calls, 2);
+  await actor.close();
+  await assert.rejects(
+    client.callTool({
+      name: "actor_create",
+      arguments: {},
+      _meta: { ...meta, callId: "new-call" },
+    }),
+  );
+  assert.equal(calls, 2);
 });
 
 test("multibyte unauthorized Bearer input returns 401 and the assembled server remains alive", async (t) => {

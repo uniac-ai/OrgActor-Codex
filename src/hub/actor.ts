@@ -1,30 +1,15 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { InMemoryTaskStore } from "@modelcontextprotocol/sdk/experimental/tasks/stores/in-memory.js";
-import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import {
-  CallToolRequestSchema,
   type CallToolResult,
   type JSONRPCMessage,
   JSONRPCMessageSchema,
-  ListToolsRequestSchema,
-  type Task,
   type Tool,
 } from "@modelcontextprotocol/sdk/types.js";
 import { Fault } from "../management/schema.js";
 import { catalogOf } from "./catalog.js";
 import { HubConnection } from "./connection.js";
 
-export interface Incoming {
-  id: string;
-  from: string;
-  cause: string | null;
-  signal: AbortSignal;
-}
-export interface Exposure {
-  tool: Tool;
-  handle(input: Record<string, unknown>, call: Incoming): Promise<Record<string, unknown>>;
-}
 class Direction implements Transport {
   onclose?: () => void;
   onerror?: (e: Error) => void;
@@ -47,108 +32,16 @@ class Direction implements Transport {
     this.onclose?.();
   }
 }
-class Tasks extends InMemoryTaskStore {
-  controllers = new Map<string, AbortController>();
-  override async updateTaskStatus(
-    id: string,
-    status: Task["status"],
-    message?: string,
-    sessionId?: string,
-  ): Promise<void> {
-    await super.updateTaskStatus(id, status, message, sessionId);
-    if (status === "cancelled") this.controllers.get(id)?.abort();
-  }
-}
 export class ActorHubSession {
   readonly client = new Client({ name: "orgactor-codex", version: "0.0.1" });
-  readonly server: Server;
   readonly connection: HubConnection;
   tools: Tool[] = [];
-  constructor(
-    url: string,
-    private exposure: Exposure[],
-  ) {
+  constructor(url: string) {
     this.connection = new HubConnection(url);
-    const tasks = new Tasks();
-    this.server = new Server(
-      { name: "orgactor-codex", version: "0.0.1" },
-      {
-        capabilities: {
-          tools: { listChanged: true },
-          tasks: { requests: { tools: { call: {} } }, cancel: {} },
-        },
-        taskStore: tasks,
-      },
-    );
-    this.server.setRequestHandler(ListToolsRequestSchema, async () => ({
-      tools: exposure.map((e) => e.tool),
-    }));
-    this.server.setRequestHandler(CallToolRequestSchema, async ({ params }, extra) => {
-      const entry = this.exposure.find((e) => e.tool.name === params.name);
-      if (!entry) throw new Fault("INTERFACE_NOT_FOUND", "The interface is not advertised.");
-      const meta = params._meta?.["agentorg/call"] as
-        | { id?: string; from?: string; cause?: string | null }
-        | undefined;
-      if (
-        !meta ||
-        typeof meta.id !== "string" ||
-        !meta.id ||
-        typeof meta.from !== "string" ||
-        !meta.from
-      )
-        throw new Fault(
-          "CALL_PROVENANCE_REQUIRED",
-          "The Hub must supply authenticated call provenance.",
-        );
-      const run = async (signal: AbortSignal): Promise<CallToolResult> => {
-        try {
-          const value = await entry.handle(params.arguments ?? {}, {
-            id: meta.id as string,
-            from: meta.from as string,
-            cause: meta.cause ?? null,
-            signal,
-          });
-          return {
-            content: [{ type: "text", text: JSON.stringify(value) }],
-            structuredContent: value,
-          };
-        } catch (e) {
-          return {
-            content: [
-              {
-                type: "text",
-                text:
-                  e instanceof Fault
-                    ? `${e.code}: ${e.message}`
-                    : "EXECUTION_FAILED: The execution could not complete.",
-              },
-            ],
-            isError: true,
-          };
-        }
-      };
-      if (!params.task || !extra.taskStore) return run(extra.signal);
-      const task = await extra.taskStore.createTask({ pollInterval: 500 });
-      const controller = new AbortController();
-      tasks.controllers.set(task.taskId, controller);
-      void run(controller.signal)
-        .then(async (result) => {
-          tasks.controllers.delete(task.taskId);
-          if (!controller.signal.aborted)
-            await extra.taskStore?.storeTaskResult(
-              task.taskId,
-              result.isError ? "failed" : "completed",
-              result,
-            );
-        })
-        .catch(() => {});
-      return { task };
-    });
   }
   async open(actorId: string, credential?: string): Promise<void> {
     await this.connection.admit({ actorId, ...(credential === undefined ? {} : { credential }) });
     const client = new Direction(this.connection);
-    const server = new Direction(this.connection);
     this.connection.listen((text) => {
       let value: unknown;
       try {
@@ -158,21 +51,11 @@ export class ActorHubSession {
       }
       const parsed = JSONRPCMessageSchema.safeParse(value);
       if (!parsed.success) return;
-      const m = parsed.data;
-      if (!("method" in m)) client.receive(m);
-      else if (
-        "id" in m ||
-        m.method === "notifications/initialized" ||
-        m.method === "notifications/cancelled"
-      )
-        server.receive(m);
-      else client.receive(m);
+      client.receive(parsed.data);
     });
     this.connection.once("closed", () => {
       void client.close();
-      void server.close();
     });
-    await this.server.connect(server);
     await this.client.connect(client);
     await this.refreshTools();
   }
@@ -212,6 +95,6 @@ export class ActorHubSession {
   }
   async close(): Promise<void> {
     this.connection.close();
-    await Promise.allSettled([this.client.close(), this.server.close()]);
+    await this.client.close();
   }
 }
