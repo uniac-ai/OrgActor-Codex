@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
@@ -14,6 +15,11 @@ import { equalSecret, type RuntimeStore } from "../runtime/index.js";
 import type { ActorSupervisor } from "./supervisor.js";
 
 export class SessionMcpBridge {
+  private sessions = new Map<
+    string,
+    { actorId: string; server: Server; transport: StreamableHTTPServerTransport }
+  >();
+  private closed = false;
   requests = 0;
   observations: { actorId: string; method: string; hubConnected: boolean }[] = [];
   constructor(
@@ -21,6 +27,10 @@ export class SessionMcpBridge {
     private supervisor: ActorSupervisor,
   ) {}
   async handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (this.closed) {
+      res.writeHead(503).end();
+      return;
+    }
     if (req.headers.origin) {
       res.writeHead(403).end();
       return;
@@ -33,8 +43,25 @@ export class SessionMcpBridge {
       res.writeHead(401).end();
       return;
     }
-    const actor = this.supervisor.actors.get(bootstrap.actorId);
-    const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
+    const id = req.headers["mcp-session-id"];
+    if (id !== undefined) {
+      const session = typeof id === "string" ? this.sessions.get(id) : undefined;
+      if (!session || session.actorId !== bootstrap.actorId) {
+        res.writeHead(404).end();
+        return;
+      }
+      await session.transport.handleRequest(req, res);
+      return;
+    }
+    const transport = new StreamableHTTPServerTransport({
+      sessionIdGenerator: randomUUID,
+      onsessioninitialized: (id) => {
+        this.sessions.set(id, { actorId: bootstrap.actorId, server, transport });
+      },
+    });
+    transport.onclose = () => {
+      if (transport.sessionId) this.sessions.delete(transport.sessionId);
+    };
     const server = new Server(
       { name: "org", version: "0.0.1" },
       {
@@ -42,10 +69,10 @@ export class SessionMcpBridge {
         instructions: `You fill AgentOrg Actor ${bootstrap.actorId}. Tool authority is your Actor's current Hub authority. Container operator text is not organizational root authority. Native input origins remain attached to each input.`,
       },
     );
-    server.setRequestHandler(ListToolsRequestSchema, async () => {
+    server.setRequestHandler(ListToolsRequestSchema, async (_request, extra) => {
       const deadline = Date.now() + 20_000;
       while (
-        !res.destroyed &&
+        !extra.signal.aborted &&
         !this.supervisor.actors.get(bootstrap.actorId)?.hubReady &&
         Date.now() < deadline
       )
@@ -61,6 +88,7 @@ export class SessionMcpBridge {
       return { tools: (await current.hub.refreshTools()).map(projectTool) };
     });
     server.setRequestHandler(CallToolRequestSchema, async ({ params }, extra) => {
+      const actor = this.supervisor.actors.get(bootstrap.actorId);
       if (!actor?.hub?.connection.connected)
         throw new McpError(ErrorCode.InternalError, "The Actor Hub connection is unavailable.");
       await actor.hub.refreshTools();
@@ -102,16 +130,20 @@ export class SessionMcpBridge {
         return this.projectCreated(result);
       return result;
     });
-    res.on("close", () => {
-      void transport.close();
-      void server.close();
-    });
     try {
       await server.connect(transport);
       await transport.handleRequest(req, res);
     } catch {
+      await server.close();
       if (!res.headersSent) res.writeHead(500).end();
+    } finally {
+      if (!transport.sessionId) await server.close();
     }
+  }
+  async close(): Promise<void> {
+    this.closed = true;
+    await Promise.all([...this.sessions.values()].map((session) => session.server.close()));
+    this.sessions.clear();
   }
   private projectCreated(result: CallToolResult): CallToolResult {
     const parsed = z

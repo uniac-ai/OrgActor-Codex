@@ -94,6 +94,7 @@ export async function startServer(options: {
   const close = async () => {
     provider.close();
     await actors.close();
+    await bridge.close();
     backend.close();
     server.closeAllConnections();
     await new Promise<void>((resolve) => server.close(() => resolve()));
