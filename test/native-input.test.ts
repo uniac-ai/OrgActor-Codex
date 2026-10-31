@@ -106,7 +106,7 @@ const cases: {
     expected: { answers: { "native-question-choice": { answers: [] } } },
   },
   {
-    name: "flat MCP strings, false boolean, integer, number and titled enum",
+    name: "optional MCP text, false boolean and titled enum",
     method: "mcpServer/elicitation/request",
     params: mcp({
       type: "object",
@@ -116,12 +116,10 @@ const cases: {
           title: "Name",
           description: null,
           default: null,
-          minLength: 1,
-          maxLength: 30,
+          minLength: 0,
+          maxLength: 20000,
         },
         enabled: { type: "boolean", title: "Enable", default: true },
-        count: { type: "integer", title: "Count", minimum: 1, maximum: 3 },
-        ratio: { type: "number", title: "Ratio", minimum: 0, maximum: 1 },
         plan: {
           type: "string",
           title: "Plan",
@@ -131,17 +129,15 @@ const cases: {
           ],
         },
       },
-      required: ["name", "enabled", "count", "ratio", "plan"],
+      required: [],
     }),
-    fields: 5,
+    fields: 3,
     answer: (f) =>
-      Object.fromEntries(
-        f.fields.map((field, n) => [field.name, ["Ada", "No", "2", "0.25", "Beta"][n]]),
-      ),
-    expected: result({ name: "Ada", enabled: false, count: 2, ratio: 0.25, plan: "b" }),
+      Object.fromEntries(f.fields.map((field, n) => [field.name, ["Ada", "No", "Beta"][n]])),
+    expected: result({ name: "Ada", enabled: false, plan: "b" }),
   },
   {
-    name: "present empty MCP response remains answered without filling defaults",
+    name: "MCP Accept without data does not fill defaults",
     method: "mcpServer/elicitation/request",
     params: mcp({
       type: "object",
@@ -152,49 +148,18 @@ const cases: {
     expected: result({}),
   },
   {
-    name: "blank optional numeric and constrained text inputs are absent, plain empty text is preserved",
+    name: "omitted optional choices are absent, plain empty text is preserved",
     method: "mcpServer/elicitation/request",
     params: mcp({
       type: "object",
       properties: {
-        count: { type: "integer", minimum: 0 },
-        ratio: { type: "number" },
-        email: { type: "string", format: "email" },
-        short: { type: "string", minLength: 1 },
+        enabled: { type: "boolean" },
+        plan: { type: "string", enum: ["a", "b"] },
         note: { type: "string" },
       },
     }),
-    fields: 5,
-    answer: (f) =>
-      Object.fromEntries(f.fields.map((field, n) => [field.name, n === 1 ? "  " : ""])),
-    expected: result({ note: "" }),
-  },
-  {
-    name: "required formatted text is required and never promises empty input",
-    method: "mcpServer/elicitation/request",
-    params: mcp({
-      type: "object",
-      properties: { email: { type: "string", title: "Email", format: "email" } },
-      required: ["email"],
-    }),
-    fields: 1,
-    answer: (f) => {
-      assert.equal(f.fields[0].required, true);
-      assert.doesNotMatch(f.fields[0].label, /empty answer is allowed/);
-      return { [f.fields[0].name]: "ada@example.invalid" };
-    },
-    expected: result({ email: "ada@example.invalid" }),
-  },
-  {
-    name: "required MCP string can explicitly be empty",
-    method: "mcpServer/elicitation/request",
-    params: mcp({
-      type: "object",
-      properties: { note: { type: "string", title: "Note" } },
-      required: ["note"],
-    }),
-    fields: 1,
-    answer: (f) => ({ [f.fields[0].name]: "" }),
+    fields: 3,
+    answer: (f) => ({ [f.fields[2].name]: "" }),
     expected: result({ note: "" }),
   },
   {
@@ -204,7 +169,6 @@ const cases: {
       {
         type: "object",
         properties: { region: { type: "string", enum: ["eu", "us"], enumNames: ["Europe", "US"] } },
-        required: ["region"],
       },
       "openai/form",
     ),
@@ -240,10 +204,20 @@ for (const c of cases)
     assert.ok(read.state === "done");
     const form = Form.parse(read.value);
     assert.equal(form.workID, undefined);
-    assert.equal(form.fields.length, c.fields);
+    const isMcp = c.method === "mcpServer/elicitation/request";
+    const dataForm = isMcp ? { ...form, fields: form.fields.slice(1) } : form;
+    assert.equal(dataForm.fields.length, c.fields);
+    if (isMcp) {
+      assert.deepEqual(form.fields[0].options, ["Accept", "Decline", "Cancel"]);
+      assert.equal(form.fields[0].required, true);
+      assert.ok(dataForm.fields.every((field) => !field.required));
+    }
     for (const field of form.fields)
       assert.doesNotMatch(field.label, /native-question-|JSON|threadId|turnId/);
-    const answers = c.answer(form);
+    const answers = {
+      ...c.answer(dataForm),
+      ...(isMcp ? { [form.fields[0].name]: "Accept" } : {}),
+    };
     const answered = await f.root.call("form_respond", {
       formID,
       expectedRevision: form.revision,
@@ -400,6 +374,43 @@ const unsupportedCases: { name: string; method: string; params: any; diagnostic:
     },
     diagnostic: /URL-based/,
   },
+  ...[{ type: "string" }, { type: "boolean" }, { type: "string", enum: ["a", "b"] }].map(
+    (property) => ({
+      name: `required MCP ${property.type}${"enum" in property ? " enum" : ""}`,
+      method: "mcpServer/elicitation/request",
+      params: mcp({ type: "object", properties: { value: property }, required: ["value"] }),
+      diagnostic: /requestedSchema\.required\.0 \(value\).*only for Accept/,
+    }),
+  ),
+  ...["integer", "number"].map((type) => ({
+    name: `MCP ${type} cannot validate ordinary text`,
+    method: "mcpServer/elicitation/request",
+    params: mcp({ type: "object", properties: { value: { type, minimum: 2 } } }),
+    diagnostic: /properties\.value\.type.*numeric text/,
+  })),
+  ...["email", "uri", "date", "date-time"].map((format) => ({
+    name: `MCP ${format} cannot validate ordinary text`,
+    method: "mcpServer/elicitation/request",
+    params: mcp({ type: "object", properties: { value: { type: "string", format } } }),
+    diagnostic: /properties\.value\.format.*before accepting a response/,
+  })),
+  ...[{ minLength: 1 }, { maxLength: 19999 }].map((limit) => ({
+    name: `MCP ${Object.keys(limit)[0]} exceeds public validation`,
+    method: "mcpServer/elicitation/request",
+    params: mcp({ type: "object", properties: { value: { type: "string", ...limit } } }),
+    diagnostic: /properties\.value\.(minLength|maxLength).*before accepting a response/,
+  })),
+  {
+    name: "MCP decision counts toward Workspace field limit",
+    method: "mcpServer/elicitation/request",
+    params: mcp({
+      type: "object",
+      properties: Object.fromEntries(
+        Array.from({ length: 100 }, (_, n) => [`value${n}`, { type: "string" }]),
+      ),
+    }),
+    diagnostic: /Form\.fields.*100/,
+  },
 ];
 for (const c of unsupportedCases)
   test(`unsupported native input stays pending without a Form: ${c.name}`, {
@@ -429,67 +440,3 @@ for (const c of unsupportedCases)
       false,
     );
   });
-
-test("ordinary MCP response must pass native constraints before any answer attempt", {
-  timeout: 10_000,
-}, async (t) => {
-  const params = mcp({
-    type: "object",
-    properties: { count: { type: "integer", minimum: 2, title: "Count" } },
-    required: ["count"],
-  });
-  assert.equal(mcpRequest(params).valid, true);
-  const release = deferred<void>(),
-    requested = deferred<string>(),
-    managerReached = deferred<void>(),
-    managerRelease = deferred<void>(),
-    managerObserved = deferred<void>();
-  t.after(() => {
-    release.resolve();
-    managerRelease.resolve();
-  });
-  const f = await nativeFormFixture(t),
-    call = f.session.call.bind(f.session);
-  let submitted = false;
-  f.session.call = async (name, args, timeout) => {
-    if (name === f.session.alias("hub:forms", "form_get")) {
-      requested.resolve(String(args.formID));
-      await release.promise;
-    }
-    const rechecking = submitted && name === f.session.alias("hub:team", "team");
-    if (rechecking) {
-      managerReached.resolve();
-      await managerRelease.promise;
-    }
-    const result = await call(name, args, timeout);
-    if (rechecking) setImmediate(() => managerObserved.resolve());
-    return result;
-  };
-  f.event("mcpServer/elicitation/request", params, "fixture-request");
-  const formID = await requested.promise;
-  const read = await f.root.call("form_get", { formID });
-  assert.ok(read.state === "done");
-  const form = Form.parse(read.value);
-  const answered = await f.root.call("form_respond", {
-    formID,
-    expectedRevision: form.revision,
-    answers: { [form.fields[0].name]: "1" },
-  });
-  assert.ok(answered.state === "done");
-  submitted = true;
-  release.resolve();
-  await managerReached.promise;
-  assert.equal(f.answers.length, 0);
-  assert.equal(
-    Object.values(f.bootstrap.approvals ?? {}).some((b) => b.answerAttempt),
-    false,
-  );
-  managerRelease.resolve();
-  await managerObserved.promise;
-  assert.match(f.actor.lastError ?? "", /Revise the Form response/);
-  assert.equal(f.answers.length, 0);
-  assert.equal(
-    Object.values(f.bootstrap.approvals ?? {}).some((b) => b.answerAttempt),
-    false,
-  );
-});

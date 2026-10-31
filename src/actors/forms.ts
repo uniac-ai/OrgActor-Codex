@@ -221,6 +221,10 @@ export function nativeForm(method: string, params: any, reference: string) {
       );
     if (schema.required?.some((key) => !Object.hasOwn(schema.properties, key)))
       return unsupported("requestedSchema.required: a required field has no primitive definition.");
+    if (schema.required?.length)
+      return unsupported(
+        `requestedSchema.required.0 (${schema.required[0]}): Forms cannot require values only for Accept while allowing Decline and Cancel without them.`,
+      );
     const rows = Object.entries(schema.properties).map(([key, property], index) => {
       if (property.type === "array")
         return unsupported(
@@ -235,6 +239,10 @@ export function nativeForm(method: string, params: any, reference: string) {
           `requestedSchema.properties.${key}${dropped ? `.${dropped}` : ""}: the typed MCP parser does not preserve these constraints.`,
         );
       }
+      if (property.type === "number" || property.type === "integer")
+        return unsupported(
+          `requestedSchema.properties.${key}.type: Forms cannot validate numeric text before accepting a response.`,
+        );
       const selection =
         "oneOf" in property
           ? choices(
@@ -259,45 +267,24 @@ export function nativeForm(method: string, params: any, reference: string) {
         return unsupported(
           `requestedSchema.properties.${key}.minLength: exceeds the Form answer maximum ${maximumAnswerLength}.`,
         );
-      const required = schema.required?.includes(key) ?? false;
-      const blankAllowed =
-        property.type === "string" &&
-        !selection &&
-        (!("format" in property) || !property.format) &&
-        (!("minLength" in property) || !property.minLength);
-      const limits = [
-        "minimum" in property && property.minimum !== undefined
-          ? `Minimum: ${property.minimum}`
-          : "",
-        "maximum" in property && property.maximum !== undefined
-          ? `Maximum: ${property.maximum}`
-          : "",
-        "minLength" in property && property.minLength !== undefined
-          ? `At least ${property.minLength} characters`
-          : "",
-        "maxLength" in property && property.maxLength !== undefined
-          ? `At most ${property.maxLength} characters`
-          : "",
+      const unvalidated =
         "format" in property && property.format
-          ? {
-              email: "Email address",
-              uri: "URL",
-              date: "Date (YYYY-MM-DD)",
-              "date-time": "Date and time (ISO 8601)",
-            }[property.format]
-          : "",
-      ];
+          ? "format"
+          : "minLength" in property && property.minLength
+            ? "minLength"
+            : "maxLength" in property &&
+                property.maxLength !== undefined &&
+                (maximumAnswerLength === null || property.maxLength < maximumAnswerLength)
+              ? "maxLength"
+              : undefined;
+      if (unvalidated)
+        return unsupported(
+          `requestedSchema.properties.${key}.${unvalidated}: Forms cannot enforce this constraint before accepting a response.`,
+        );
       const field = {
-        name: name(index),
-        required: required && !blankAllowed,
-        label: [
-          params.message,
-          property.title ?? key,
-          property.description,
-          property.type === "integer" ? "Whole number" : property.type === "number" ? "Number" : "",
-          required && blankAllowed ? "Required; an empty answer is allowed." : "",
-          ...limits,
-        ]
+        name: name(index + 1),
+        required: false,
+        label: [params.message, property.title ?? key, property.description]
           .filter(Boolean)
           .join("\n"),
         ...(selection
@@ -309,22 +296,12 @@ export function nativeForm(method: string, params: any, reference: string) {
       return {
         key,
         field,
-        omitBlank: !required && !blankAllowed,
+        omitBlank: !!selection || property.type === "boolean",
         value: (answer: string): unknown => {
           if (selection) return selection.value(answer);
           if (property.type === "boolean") {
             if (answer !== "Yes" && answer !== "No") return invalid();
             return answer === "Yes";
-          }
-          if (property.type === "number" || property.type === "integer") {
-            const number = Number(answer);
-            if (
-              !answer.trim() ||
-              !Number.isFinite(number) ||
-              (property.type === "integer" && !Number.isSafeInteger(number))
-            )
-              return invalid();
-            return number;
           }
           return answer;
         },
@@ -339,9 +316,25 @@ export function nativeForm(method: string, params: any, reference: string) {
       );
     }
     return finish(
-      rows.map((row) => row.field),
-      (answers) =>
-        responseFor(
+      [
+        {
+          name: name(0),
+          label: `${params.message}\nChoose Accept to submit values, Decline to refuse, or Cancel to stop.`,
+          required: true,
+          options: ["Accept", "Decline", "Cancel"],
+        },
+        ...rows.map((row) => row.field),
+      ],
+      (answers) => {
+        const decisions: Record<string, string> = {
+          Accept: "accept",
+          Decline: "decline",
+          Cancel: "cancel",
+        };
+        const choice = decisions[answers[name(0)]];
+        if (!choice) return invalid();
+        if (choice !== "accept") return responseFor(method, params, choice, null);
+        return responseFor(
           method,
           { ...params, requestedSchema: validationSchema },
           "accept",
@@ -354,7 +347,8 @@ export function nativeForm(method: string, params: any, reference: string) {
               )
               .map((row) => [row.key, row.value(answers[row.field.name])]),
           ),
-        ),
+        );
+      },
     );
   }
   return finish(
