@@ -22,6 +22,7 @@ export interface Submission {
   id: string;
   text: string;
   from: string;
+  /** Historical receipt provenance; new local inputs retain no Hub invocation cause. */
   cause: string | null;
   state: "queued" | "sending" | "running" | "unknown" | "done";
   turnId?: string;

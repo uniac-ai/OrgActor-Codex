@@ -41,7 +41,6 @@ test("Actor Hub peer consumes the Hub catalog and rejects reverse interface requ
                   id: "hub:messages",
                   name: "messages",
                   interface: "messages",
-                  routed: false,
                   one_way: false,
                   long_running: false,
                 },

@@ -56,10 +56,9 @@ npm test
 npm run test:browser
 ```
 
-CI pins Node 22.22.0 and 24.22.1; browser and container checks run on Node 24. The compatibility change still needs its updated public Hub checkpoint; the real harness's retained older revision does not establish that compatibility. Once that checkpoint is integrated and a real run is authorized, model integration is opt-in and uses an isolated Hub built at the reviewed revision:
+CI pins Node 22.22.0 and 24.22.1; browser and container checks run on Node 24. Model-free integration launches the checked Hub wire/type checkpoint `cca137062a9c2d979d134da9a191739d9fefe9c4` through its public CLI, with an isolated temporary home and a fake native backend. The same public CLI path supports separately authorized, opt-in real model integration:
 
 ```sh
-HUB_ROOT=/absolute/path/to/reviewed-hub \
 CODEX_SSH_PROOF_ROOT=/absolute/path/to/authorized-ssh-proof \
 npm run test:real
 ```

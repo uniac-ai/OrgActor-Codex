@@ -2,15 +2,15 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { pathToFileURL } from "node:url";
-import { ActorHubSession } from "../src/hub/actor.js";
+import { connectClient } from "@agentorg/cli/actor";
+import { BUILTINS } from "@agentorg/cli/contract";
 import { CodexProvider } from "../src/provider/index.js";
-import { hash, token } from "../src/runtime/index.js";
+import { token } from "../src/runtime/index.js";
 import { startServer } from "../src/server/index.js";
 import { cleanupOwned } from "./cleanup.js";
+import { hubPackageSha256, hubRevision, startPublicHub } from "./hub.js";
 
 // This opt-in test uses existing ChatGPT authentication; it never reads authentication tokens.
-const hubRoot = resolve(process.env.HUB_ROOT ?? ".e2e/hub");
 const sshRoot = process.env.CODEX_SSH_PROOF_ROOT;
 assert.ok(sshRoot, "Set CODEX_SSH_PROOF_ROOT to the authorized SSH backend proof directory");
 const sshSeed = JSON.parse(readFileSync(join(sshRoot, "phase1-seed.json"), "utf8"));
@@ -21,7 +21,8 @@ mkdirSync(".e2e", { recursive: true });
 const owned = mkdtempSync(resolve(".e2e/real-"));
 chmodSync(owned, 0o700);
 const evidence: any = {
-  hubRevision: "58dbececc84289f378f658b35504371106a7c760",
+  hubRevision,
+  hubPackageSha256,
   owned,
   startedAt: new Date().toISOString(),
   setupOnly,
@@ -30,19 +31,14 @@ const evidence: any = {
 };
 const save = () =>
   writeFileSync(join(owned, "evidence.json"), JSON.stringify(evidence, null, 2), { mode: 0o600 });
-const { startCore } = await import(pathToFileURL(join(hubRoot, "dist/src/server/index.js")).href);
-const { SqliteStore } = await import(
-  pathToFileURL(join(hubRoot, "dist/src/storage/sqlite/index.js")).href
-);
-const database = new SqliteStore(join(owned, "hub.db"));
 const providerCredential = token();
 const providerId = `codex-${randomUUID().slice(0, 8)}`;
-const hub = await startCore(database, {
-  port: 0,
-  providers: [{ providerId, credentialHash: hash(providerCredential) }],
+const hub = await startPublicHub(join(owned, "hub"), providerId, providerCredential);
+const root = await connectClient({
+  url: hub.url,
+  actorId: hub.rootId,
+  credential: hub.rootCredential,
 });
-const rootIdentity = await hub.organization.registry.createRoot();
-const root = new ActorHubSession(hub.url);
 const module = await startServer({
   root: join(owned, "runtime"),
   port: 0,
@@ -136,20 +132,19 @@ try {
   module.store.save();
   await native.protocol.request("thread/archive", { threadId: offlineBootstrap.threadId });
   archived.add(offlineBootstrap.threadId);
-  await root.open(rootIdentity.root.id, rootIdentity.credential);
   await module.provider.setEnabled(true);
   await until("Provider admission", () => module.provider.snapshot().connected);
   const providerConnection = module.provider.connection?.connectionId;
   for (let n = 0; n < 3; n++) assert.equal((await module.setup.probe("hub")).state, "ready");
   assert.equal(module.provider.connection?.connectionId, providerConnection);
-  const created = await root.call(root.alias("hub:actors", "actor_create"), {
+  const created = await root.call("actor_create", {
     name: `test-${randomUUID().slice(0, 6)}`,
     purpose: "Owned OrgActor-Codex end-to-end verification.",
     execution: { providerId, config: {} },
   });
-  assert.equal(created.isError, undefined);
-  const result = created.structuredContent as any;
-  assert.equal(result.execution.status, "ready");
+  assert.ok(created.state === "done");
+  const result = BUILTINS.actor_create.response.parse(created.value);
+  assert.equal(result.execution?.status, "ready");
   evidence.admissionProbePreservesFactory = {
     sameConnection: module.provider.connection?.connectionId === providerConnection,
     describesAndCreates: true,
@@ -336,7 +331,6 @@ try {
   await root.close();
   await module.close();
   await hub.close();
-  database.close();
   const unknown = Object.values(module.store.data.journal).filter(
     (j) => j.state === "unknown" || j.state === "creating",
   );

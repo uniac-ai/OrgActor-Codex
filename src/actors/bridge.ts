@@ -60,7 +60,7 @@ export class SessionMcpBridge {
         throw new McpError(ErrorCode.InternalError, "The Actor Hub connection is unavailable.");
       return { tools: (await current.hub.refreshTools()).map(projectTool) };
     });
-    server.setRequestHandler(CallToolRequestSchema, async ({ params }) => {
+    server.setRequestHandler(CallToolRequestSchema, async ({ params }, extra) => {
       if (!actor?.hub?.connection.connected)
         throw new McpError(ErrorCode.InternalError, "The Actor Hub connection is unavailable.");
       await actor.hub.refreshTools();
@@ -72,7 +72,11 @@ export class SessionMcpBridge {
           ErrorCode.InvalidParams,
           "This bridge belongs to another native thread.",
         );
-      if (!actor.matchesToolCall(params._meta, params.name))
+      if (
+        !(await actor.waitForToolCall(params._meta, params.name, extra.signal)) ||
+        extra.signal.aborted ||
+        !actor.matchesToolCall(params._meta, params.name)
+      )
         throw new McpError(
           ErrorCode.InvalidParams,
           "This bridge requires the current native session and tool call.",
@@ -92,7 +96,6 @@ export class SessionMcpBridge {
       const result = await actor.hub.call(
         tool.name,
         params.arguments ?? {},
-        actor.currentCause(),
         Math.max(60_000, (wait + 30) * 1000),
       );
       if (meta.id === "hub:actors" && meta.interface === "actor_create" && !result.isError)

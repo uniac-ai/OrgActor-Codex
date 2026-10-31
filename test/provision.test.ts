@@ -20,7 +20,6 @@ const tool = (id: string, name: string, alias: string) => ({
       id,
       name: id.slice(4),
       interface: name,
-      routed: false,
       one_way: false,
       long_running: false,
     },

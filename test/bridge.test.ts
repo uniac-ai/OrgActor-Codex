@@ -30,7 +30,6 @@ test("native HTTP MCP receives schema-valid Actor creation without structured/te
       id,
       name: id.slice(4),
       interface: name,
-      routed: false,
       one_way: false,
       long_running: false,
     },
@@ -116,7 +115,11 @@ test("native HTTP MCP receives schema-valid Actor creation without structured/te
     { threadId: "thread", sessionId: "session" },
     { threadId: "thread", callId: "create-call" },
   ])
-    await assert.rejects(client.callTool({ name: "actor_create", arguments: {}, _meta: invalid }));
+    await assert.rejects(
+      client.callTool({ name: "actor_create", arguments: {}, _meta: invalid }, undefined, {
+        signal: AbortSignal.timeout(30),
+      }),
+    );
   assert.equal(calls, 0);
   const result = await client.callTool({
     name: "actor_create",
@@ -152,7 +155,7 @@ test("native HTTP MCP receives schema-valid Actor creation without structured/te
   await assert.rejects(client.callTool({ name: "question_answer", arguments: {}, _meta: meta }));
   event("item/completed", {
     turnId: "turn",
-    item: { id: "create-call", type: "mcpToolCall", server: "org" },
+    item: { id: "create-call", type: "mcpToolCall", server: "org", tool: "actor_create" },
   });
   await assert.rejects(client.callTool({ name: "actor_create", arguments: {}, _meta: meta }));
   begin("finished-turn-call", "actor_create");
@@ -167,11 +170,15 @@ test("native HTTP MCP receives schema-valid Actor creation without structured/te
   event("turn/started", { turn: { id: "new-turn" } });
   begin("stale-call", "actor_create", "turn");
   await assert.rejects(
-    client.callTool({
-      name: "actor_create",
-      arguments: {},
-      _meta: { ...meta, callId: "stale-call" },
-    }),
+    client.callTool(
+      {
+        name: "actor_create",
+        arguments: {},
+        _meta: { ...meta, callId: "stale-call" },
+      },
+      undefined,
+      { signal: AbortSignal.timeout(30) },
+    ),
   );
   begin("new-call", "actor_create", "new-turn");
   event("turn/completed", { turn: { id: "turn", status: "completed", items: [] } });
@@ -181,6 +188,30 @@ test("native HTTP MCP receives schema-valid Actor creation without structured/te
     _meta: { ...meta, callId: "new-call" },
   });
   assert.equal(calls, 2);
+  const wait = actor.waitForToolCall.bind(actor);
+  actor.waitForToolCall = async (...args) => {
+    const valid = await wait(...args);
+    event("item/completed", {
+      turnId: "new-turn",
+      item: {
+        id: "completed-before-dispatch",
+        type: "mcpToolCall",
+        server: "org",
+        tool: "actor_create",
+      },
+    });
+    return valid;
+  };
+  begin("completed-before-dispatch", "actor_create", "new-turn");
+  await assert.rejects(
+    client.callTool({
+      name: "actor_create",
+      arguments: {},
+      _meta: { ...meta, callId: "completed-before-dispatch" },
+    }),
+  );
+  assert.equal(calls, 2);
+  actor.waitForToolCall = wait;
   await actor.close();
   await assert.rejects(
     client.callTool({

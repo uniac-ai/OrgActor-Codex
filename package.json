@@ -23,6 +23,7 @@
     "zod": "4.6.7"
   },
   "devDependencies": {
+    "@agentorg/cli": "file:test/fixtures/agentorg-cli-cca13706.tgz",
     "@base-ui/react": "1.9.0",
     "@biomejs/biome": "2.6.3",
     "@playwright/test": "1.64.1",

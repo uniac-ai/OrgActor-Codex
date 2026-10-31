@@ -45,7 +45,7 @@ function fixture(t: any) {
     interrupt: async (_: string, turn: string) => {
       interrupts.push(turn);
     },
-    read: async () => ({ thread: { turns: history } }),
+    read: async () => ({ thread: { id: "owned", sessionId: "native-session", turns: history } }),
     answer() {},
     reject() {},
   };
@@ -77,10 +77,269 @@ function fixture(t: any) {
     },
   };
 }
+test("native history restores active Tool identity without replaying item events", async (t) => {
+  const f = fixture(t);
+  f.history([
+    {
+      id: "active",
+      status: "inProgress",
+      items: [
+        {
+          id: "active-call",
+          type: "mcpToolCall",
+          server: "org",
+          tool: "team",
+          status: "inProgress",
+        },
+        {
+          id: "completed-call",
+          type: "mcpToolCall",
+          server: "org",
+          tool: "team",
+          status: "completed",
+        },
+        {
+          id: "foreign-server",
+          type: "mcpToolCall",
+          server: "other",
+          tool: "team",
+          status: "inProgress",
+        },
+      ],
+    },
+  ]);
+  await f.actor.reconcile();
+  const meta = { threadId: "owned", sessionId: "native-session", callId: "active-call" };
+  assert.equal(await f.actor.waitForToolCall(meta, "team", new AbortController().signal), true);
+  assert.equal(f.actor.matchesToolCall({ ...meta, callId: "completed-call" }, "team"), false);
+  assert.equal(f.actor.matchesToolCall({ ...meta, callId: "foreign-server" }, "team"), false);
+  assert.equal(f.actor.matchesToolCall(meta, "other-alias"), false);
+  f.event("item/completed", {
+    turnId: "active",
+    item: { id: "active-call", type: "mcpToolCall", server: "org", tool: "team" },
+  });
+  await f.actor.reconcile();
+  assert.equal(f.actor.matchesToolCall(meta, "team"), false);
+});
+test("late history cannot overwrite newer turn events, item completion, scope or reconciliation", async (t) => {
+  const f = fixture(t);
+  const old = deferred<any>();
+  f.adapter.read = async () => old.promise;
+  const reading = f.actor.reconcile();
+  f.event("turn/started", { turn: { id: "new-turn" } });
+  f.event("item/started", {
+    turnId: "new-turn",
+    item: { id: "new-call", type: "mcpToolCall", server: "org", tool: "team" },
+  });
+  const meta = { threadId: "owned", sessionId: "native-session", callId: "new-call" };
+  const pending = f.actor.waitForToolCall(meta, "team", new AbortController().signal);
+  old.resolve({
+    thread: {
+      id: "owned",
+      sessionId: "native-session",
+      turns: [
+        {
+          id: "old-turn",
+          status: "inProgress",
+          items: [
+            {
+              id: "old-call",
+              type: "mcpToolCall",
+              server: "org",
+              tool: "team",
+              status: "inProgress",
+            },
+          ],
+        },
+      ],
+    },
+  });
+  await reading;
+  assert.equal(f.actor.turnId, "new-turn");
+  assert.equal(await pending, true);
+  assert.equal(f.actor.matchesToolCall({ ...meta, callId: "old-call" }, "team"), false);
+
+  const staleItem = deferred<any>();
+  f.adapter.read = async () => staleItem.promise;
+  const itemRead = f.actor.reconcile();
+  f.event("item/completed", {
+    turnId: "new-turn",
+    item: { id: "new-call", type: "mcpToolCall", server: "org", tool: "team" },
+  });
+  staleItem.resolve({
+    thread: {
+      id: "owned",
+      sessionId: "native-session",
+      turns: [
+        {
+          id: "new-turn",
+          status: "inProgress",
+          items: [
+            {
+              id: "new-call",
+              type: "mcpToolCall",
+              server: "org",
+              tool: "team",
+              status: "inProgress",
+            },
+          ],
+        },
+      ],
+    },
+  });
+  await itemRead;
+  assert.equal(f.actor.matchesToolCall(meta, "team"), false);
+
+  const oldest = deferred<any>();
+  const newest = deferred<any>();
+  let reads = 0;
+  f.adapter.read = async () => (++reads === 1 ? oldest.promise : newest.promise);
+  const olderRead = f.actor.reconcile();
+  const newerRead = f.actor.reconcile();
+  newest.resolve({
+    thread: {
+      id: "owned",
+      sessionId: "new-session",
+      turns: [
+        {
+          id: "latest-turn",
+          status: "inProgress",
+          items: [
+            {
+              id: "latest-call",
+              type: "mcpToolCall",
+              server: "org",
+              tool: "team",
+              status: "inProgress",
+            },
+          ],
+        },
+      ],
+    },
+  });
+  await newerRead;
+  oldest.resolve({ thread: { id: "owned", sessionId: "old-session", turns: [] } });
+  await olderRead;
+  assert.equal(f.actor.turnId, "latest-turn");
+  const latestMeta = { threadId: "owned", sessionId: "new-session", callId: "latest-call" };
+  assert.equal(f.actor.matchesToolCall(latestMeta, "team"), true);
+
+  const disconnected = deferred<any>();
+  f.adapter.read = async () => disconnected.promise;
+  const disconnectedRead = f.actor.reconcile();
+  f.event("connection/closed", {});
+  disconnected.resolve({
+    thread: {
+      id: "owned",
+      sessionId: "new-session",
+      turns: [
+        {
+          id: "latest-turn",
+          status: "inProgress",
+          items: [
+            {
+              id: "latest-call",
+              type: "mcpToolCall",
+              server: "org",
+              tool: "team",
+              status: "inProgress",
+            },
+          ],
+        },
+      ],
+    },
+  });
+  await disconnectedRead;
+  assert.equal(f.actor.matchesToolCall(latestMeta, "team"), false);
+  const foreign = fixture(t);
+  foreign.adapter.read = async () => ({
+    thread: { id: "foreign", sessionId: "native-session", turns: [] },
+  });
+  await assert.rejects(
+    foreign.actor.reconcile(),
+    (error: any) => error.code === "NATIVE_HISTORY_MISMATCH",
+  );
+  assert.equal(foreign.actor.turnId, null);
+});
+test("terminal native history dominates delayed turn and item start notifications", async (t) => {
+  for (const terminal of ["turn", "item"]) {
+    const f = fixture(t);
+    const history = deferred<any>();
+    f.adapter.read = async () => history.promise;
+    const reading = f.actor.reconcile();
+    const start = () => {
+      f.event("turn/started", { turn: { id: "terminal-turn" } });
+      f.event("item/started", {
+        turnId: "terminal-turn",
+        item: { id: "terminal-call", type: "mcpToolCall", server: "org", tool: "team" },
+      });
+    };
+    start();
+    const meta = { threadId: "owned", sessionId: "native-session", callId: "terminal-call" };
+    const waiting = f.actor.waitForToolCall(meta, "team", new AbortController().signal);
+    history.resolve({
+      thread: {
+        id: "owned",
+        sessionId: "native-session",
+        turns: [
+          {
+            id: "terminal-turn",
+            status: terminal === "turn" ? "completed" : "inProgress",
+            items: [
+              {
+                id: "terminal-call",
+                type: "mcpToolCall",
+                server: "org",
+                tool: "team",
+                status: "completed",
+              },
+            ],
+          },
+        ],
+      },
+    });
+    await reading;
+    assert.equal(await waiting, false);
+    assert.equal(f.actor.matchesToolCall(meta, "team"), false);
+    start();
+    assert.equal(f.actor.turnId, terminal === "turn" ? null : "terminal-turn");
+    assert.equal(f.actor.matchesToolCall(meta, "team"), false);
+  }
+});
+test("native observation waits expire or cancel without retaining authority or listeners", async (t) => {
+  const meta = { threadId: "owned", sessionId: "native-session", callId: "not-yet-observed" };
+  for (const end of ["abort", "disconnect", "reconcile", "close"]) {
+    const f = fixture(t);
+    await f.actor.reconcile();
+    const request = new AbortController();
+    let settled = false;
+    const pending = f.actor.waitForToolCall(meta, "team", request.signal).finally(() => {
+      settled = true;
+    });
+    await Promise.resolve();
+    assert.equal(settled, false);
+    assert.equal(f.actor.listenerCount("toolObserved"), 1);
+    if (end === "abort") request.abort();
+    if (end === "disconnect") f.event("connection/closed", {});
+    if (end === "reconcile") await f.actor.reconcile();
+    if (end === "close") await f.actor.close();
+    assert.equal(await pending, false);
+    assert.equal(f.actor.listenerCount("toolObserved"), 0);
+    assert.equal(f.actor.listenerCount("toolInvalidated"), 0);
+  }
+  const f = fixture(t);
+  await f.actor.reconcile();
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const pending = f.actor.waitForToolCall(meta, "team", new AbortController().signal);
+  t.mock.timers.tick(20_000);
+  assert.equal(await pending, false);
+  assert.equal(f.actor.listenerCount("toolObserved"), 0);
+  assert.equal(f.actor.listenerCount("toolInvalidated"), 0);
+});
 test("recovery uses native clientId, never caller text or foreign completion", async (t) => {
   const f = fixture(t);
   f.actor.adapter = undefined;
-  const input = f.actor.enqueue("known", "payload", "manager", "known");
+  const input = f.actor.enqueue("known", "payload", "manager");
   input.state = "unknown";
   f.actor.adapter = f.adapter as any;
   f.history([
@@ -111,10 +370,10 @@ test("recovery uses native clientId, never caller text or foreign completion", a
   });
   assert.equal(f.bootstrap.submissions[0].result?.output, "actual");
 });
-test("local steering retains input provenance; mixed native-applied inputs do not guess a cause", async (t) => {
+test("local steering retains sender and native input provenance", async (t) => {
   const f = fixture(t);
   f.actor.adapter = undefined;
-  const run = f.actor.enqueue("run", "first", "manager", "call-run");
+  const run = f.actor.enqueue("run", "first", "manager");
   run.state = "running";
   run.turnId = "turn-owned";
   f.actor.adapter = f.adapter as any;
@@ -123,14 +382,13 @@ test("local steering retains input provenance; mixed native-applied inputs do no
     turnId: "turn-owned",
     item: { type: "userMessage", clientId: "run" },
   });
-  assert.equal(f.actor.currentCause(), "call-run");
-  await f.actor.steer("call-steer", "turn-owned", "second", "manager", "call-steer");
-  assert.equal(f.bootstrap.submissions[1].cause, "call-steer");
+  assert.equal(run.from, "manager");
+  await f.actor.steer("call-steer", "turn-owned", "second", "manager");
+  assert.equal(f.bootstrap.submissions[1].from, "manager");
   f.event("item/completed", {
     turnId: "turn-owned",
     item: { type: "userMessage", clientId: "call-steer" },
   });
-  assert.equal(f.actor.currentCause(), null);
   f.event("turn/completed", { turn: { id: "turn-owned", status: "completed", items: [] } });
   assert.equal(f.bootstrap.submissions[1].result?.status, "completed");
   assert.equal(

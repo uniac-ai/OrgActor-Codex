@@ -24,7 +24,11 @@ export class ActorController extends EventEmitter {
   private nativeOpening?: Promise<void>;
   private nativeOpened = false;
   private sessionId?: string;
-  private toolCalls = new Map<string, { turnId: string; tool: string }>();
+  private turnRevision = 0;
+  private reading?: object;
+  private nativeClosed = false;
+  private completedTurns = new Set<string>();
+  private toolCalls = new Map<string, { turnId: string; tool: string; completed?: boolean }>();
   constructor(
     readonly bootstrap: Bootstrap,
     private store: RuntimeStore,
@@ -106,7 +110,7 @@ export class ActorController extends EventEmitter {
     void this.pump();
     void this.watchInbox();
   }
-  enqueue(id: string, text: string, from = "operator", cause: string | null = null): Submission {
+  enqueue(id: string, text: string, from = "operator"): Submission {
     if (!this.bootstrap.threadId || (this.hubOpening && !this.nativeOpened))
       throw new Fault(
         "NATIVE_BINDING_PENDING",
@@ -119,7 +123,7 @@ export class ActorController extends EventEmitter {
         throw new Fault("INPUT_CONFLICT", "This input identity already has different content.");
       return existing;
     }
-    const submission: Submission = { id, text, from, cause, state: "queued" };
+    const submission: Submission = { id, text, from, cause: null, state: "queued" };
     this.bootstrap.submissions.push(submission);
     this.store.save();
     void this.pump();
@@ -130,7 +134,6 @@ export class ActorController extends EventEmitter {
     turnId: string,
     text: string,
     from = "operator",
-    cause: string | null = null,
   ): Promise<Record<string, unknown>> {
     const old = this.bootstrap.submissions.find((s) => s.id === id);
     if (old) {
@@ -149,7 +152,7 @@ export class ActorController extends EventEmitter {
       id,
       text,
       from,
-      cause,
+      cause: null,
       state: "sending",
       turnId,
       kind: "steer",
@@ -253,46 +256,84 @@ export class ActorController extends EventEmitter {
     }
   }
   async reconcile(): Promise<void> {
-    const read = await this.adapter?.read(this.bootstrap.threadId);
-    this.toolCalls.clear();
-    this.sessionId =
-      read?.thread?.id === this.bootstrap.threadId && typeof read.thread.sessionId === "string"
-        ? read.thread.sessionId
-        : undefined;
-    const turns: any[] = read?.thread?.turns ?? [];
-    this.observedAt = new Date().toISOString();
-    const active = turns.find((t) => t.status === "inProgress");
-    this.turnId = active?.id ?? null;
-    for (const submission of this.bootstrap.submissions) {
-      if (!["sending", "unknown", "running"].includes(submission.state)) continue;
-      const appliedTurn = turns.find((t) => hasInput(t, submission.id));
-      if (appliedTurn) submission.applied = true;
-      const turn =
-        appliedTurn ??
-        (submission.applied || (submission.kind !== "steer" && submission.state === "running")
-          ? turns.find((t) => t.id === submission.turnId)
-          : undefined);
-      if (turn) {
-        submission.turnId = turn.id;
-        if (turn.status !== "inProgress") this.finish(turn);
-        else {
-          submission.state = "running";
-          if (submission.cancelRequested && this.turnId === turn.id)
-            await this.adapter?.interrupt(this.bootstrap.threadId, turn.id);
-        }
-      } else submission.state = "unknown";
+    const reading = {};
+    this.reading = reading;
+    const turnRevision = this.turnRevision;
+    const previousTurn = this.turnId;
+    const previousSession = this.sessionId;
+    this.emit("toolInvalidated");
+    try {
+      const read = await this.adapter?.read(this.bootstrap.threadId);
+      if (this.reading !== reading || this.stopped || this.nativeClosed) return;
+      if (read?.thread?.id !== this.bootstrap.threadId)
+        throw new Fault(
+          "NATIVE_HISTORY_MISMATCH",
+          "Codex returned history for another native thread.",
+        );
+      this.sessionId =
+        typeof read.thread.sessionId === "string" ? read.thread.sessionId : undefined;
+      if (previousSession !== undefined && previousSession !== this.sessionId)
+        for (const [id, call] of this.toolCalls) if (!call.completed) this.toolCalls.delete(id);
+      const turns: any[] = read?.thread?.turns ?? [];
+      for (const turn of turns) if (turn.status !== "inProgress") this.completedTurns.add(turn.id);
+      this.observedAt = new Date().toISOString();
+      if (turnRevision === this.turnRevision) {
+        this.turnId = turns.find((t) => t.status === "inProgress")?.id ?? null;
+        if (previousTurn !== this.turnId) this.appliedInputs.clear();
+      }
+      if (this.turnId && this.completedTurns.has(this.turnId)) this.turnId = null;
+      const active = turns.find((t) => t.id === this.turnId && t.status === "inProgress");
+      for (const item of active?.items ?? []) {
+        if (item.type === "userMessage") this.appliedInputs.add(item.clientId ?? "unattributed");
+        if (
+          item.type === "mcpToolCall" &&
+          item.server === "org" &&
+          typeof item.id === "string" &&
+          typeof item.tool === "string" &&
+          (item.status !== "inProgress" || this.toolCalls.get(item.id)?.turnId !== active.id)
+        )
+          this.toolCalls.set(item.id, {
+            turnId: active.id,
+            tool: item.tool,
+            completed: item.status !== "inProgress",
+          });
+      }
+      for (const submission of this.bootstrap.submissions) {
+        if (!["sending", "unknown", "running"].includes(submission.state)) continue;
+        const appliedTurn = turns.find((t) => hasInput(t, submission.id));
+        if (appliedTurn) submission.applied = true;
+        const turn =
+          appliedTurn ??
+          (submission.applied || (submission.kind !== "steer" && submission.state === "running")
+            ? turns.find((t) => t.id === submission.turnId)
+            : undefined);
+        if (turn) {
+          submission.turnId = turn.id;
+          if (turn.status !== "inProgress") this.finish(turn);
+          else {
+            submission.state = "running";
+            if (submission.cancelRequested && this.turnId === turn.id)
+              await this.adapter?.interrupt(this.bootstrap.threadId, turn.id);
+          }
+        } else submission.state = "unknown";
+      }
+      this.store.save();
+    } catch (error) {
+      if (this.reading === reading) this.sessionId = undefined;
+      throw error;
+    } finally {
+      if (this.reading === reading) {
+        this.reading = undefined;
+        this.emit("toolObserved");
+      }
     }
-    this.appliedInputs = new Set(
-      (active?.items ?? [])
-        .filter((i: any) => i.type === "userMessage")
-        .map((i: any) => i.clientId ?? "unattributed"),
-    );
-    this.store.save();
   }
   private observe(event: NativeEvent): void {
     if (event.method === "connection/closed") {
+      this.nativeClosed = true;
       this.sessionId = undefined;
       this.toolCalls.clear();
+      this.emit("toolInvalidated");
       this.emit("disconnected");
       return;
     }
@@ -300,16 +341,35 @@ export class ActorController extends EventEmitter {
     const threadId = p.threadId ?? p.thread?.id;
     if (threadId !== this.bootstrap.threadId) return;
     this.observedAt = new Date().toISOString();
-    if (event.method === "turn/started") {
+    if (event.method === "turn/started" && !this.completedTurns.has(p.turn.id)) {
+      this.turnRevision++;
+      if (this.turnId !== p.turn.id) {
+        this.toolCalls.clear();
+        this.appliedInputs.clear();
+        this.output = "";
+      }
       this.turnId = p.turn.id;
-      this.toolCalls.clear();
-      this.appliedInputs.clear();
-      this.output = "";
     }
-    if (p.item?.type === "mcpToolCall" && p.item.server === "org" && p.turnId === this.turnId) {
-      if (event.method === "item/started")
-        this.toolCalls.set(p.item.id, { turnId: p.turnId, tool: p.item.tool });
-      if (event.method === "item/completed") this.toolCalls.delete(p.item.id);
+    if (
+      ["item/started", "item/completed"].includes(event.method) &&
+      p.item?.type === "mcpToolCall" &&
+      p.item.server === "org" &&
+      typeof p.turnId === "string" &&
+      typeof p.item.id === "string" &&
+      typeof p.item.tool === "string"
+    ) {
+      const previous = this.toolCalls.get(p.item.id);
+      if (
+        !previous ||
+        previous.turnId !== p.turnId ||
+        !previous.completed ||
+        event.method === "item/completed"
+      )
+        this.toolCalls.set(p.item.id, {
+          turnId: p.turnId,
+          tool: p.item.tool,
+          completed: event.method === "item/completed",
+        });
     }
     if (
       ["item/started", "item/completed"].includes(event.method) &&
@@ -331,7 +391,8 @@ export class ActorController extends EventEmitter {
     if (event.method === "item/agentMessage/delta")
       this.output = (this.output + (p.delta ?? "")).slice(-100_000);
     if (event.method === "turn/completed") {
-      if (this.turnId === p.turn.id) this.toolCalls.clear();
+      this.completedTurns.add(p.turn.id);
+      this.turnRevision++;
       this.finish(p.turn);
       if (this.turnId === p.turn.id) this.turnId = null;
       for (const [id, request] of this.requests)
@@ -358,6 +419,8 @@ export class ActorController extends EventEmitter {
           this.lastError = "The approval is waiting for its Hub answerer.";
         });
     }
+    if (["turn/started", "turn/completed", "item/started", "item/completed"].includes(event.method))
+      this.emit("toolObserved");
   }
   private finish(turn: any): void {
     const output =
@@ -559,13 +622,12 @@ export class ActorController extends EventEmitter {
           await hub.call(
             hub.alias("hub:messages", "messages"),
             { unread: true, limit: 200, wait: 20 },
-            null,
             30_000,
           )
         ).structuredContent as any;
         if (!r || !Array.isArray(r.messages)) continue;
         for (const message of [...r.messages].reverse())
-          this.enqueue(`message:${message.id}`, message.text, message.from, null);
+          this.enqueue(`message:${message.id}`, message.text, message.from);
         if (r.messages.length)
           await hub.call(hub.alias("hub:messages", "message_read"), {
             ids: r.messages.map((m: any) => m.id),
@@ -579,31 +641,76 @@ export class ActorController extends EventEmitter {
       }
     }
   }
-  currentCause(): string | null {
-    if (this.appliedInputs.size !== 1) return null;
-    return (
-      this.bootstrap.submissions.find(
-        (s) => s.id === [...this.appliedInputs][0] && s.turnId === this.turnId,
-      )?.cause ?? null
-    );
-  }
   matchesToolCall(meta: Record<string, unknown> | undefined, tool: string): boolean {
     const call = typeof meta?.callId === "string" ? this.toolCalls.get(meta.callId) : undefined;
     return (
       !this.stopped &&
+      !this.reading &&
       !!this.bootstrap.threadId &&
       !!this.sessionId &&
       meta?.sessionId === this.sessionId &&
       meta?.threadId === this.bootstrap.threadId &&
       !!this.turnId &&
+      !this.completedTurns.has(this.turnId) &&
       call?.turnId === this.turnId &&
+      !call.completed &&
       call.tool === tool
     );
+  }
+  /** Native events and MCP HTTP requests travel independently; arrival order grants no authority. */
+  waitForToolCall(
+    meta: Record<string, unknown> | undefined,
+    tool: string,
+    signal: AbortSignal,
+  ): Promise<boolean> {
+    if (
+      this.stopped ||
+      !this.bootstrap.threadId ||
+      this.nativeClosed ||
+      (!this.sessionId && !this.reading) ||
+      meta?.threadId !== this.bootstrap.threadId ||
+      typeof meta?.sessionId !== "string" ||
+      !meta.sessionId ||
+      (!this.reading && this.sessionId !== undefined && meta.sessionId !== this.sessionId) ||
+      typeof meta?.callId !== "string" ||
+      !meta.callId ||
+      signal.aborted
+    )
+      return Promise.resolve(false);
+    return new Promise((resolve) => {
+      const finish = (valid = false) => {
+        clearTimeout(timer);
+        this.off("toolObserved", check);
+        this.off("toolInvalidated", invalidated);
+        signal.removeEventListener("abort", invalidated);
+        resolve(valid);
+      };
+      const invalidated = () => finish();
+      const check = () => {
+        if (
+          this.stopped ||
+          this.nativeClosed ||
+          signal.aborted ||
+          meta.threadId !== this.bootstrap.threadId ||
+          (!this.reading && this.sessionId !== undefined && meta.sessionId !== this.sessionId) ||
+          (!this.sessionId && !this.reading)
+        )
+          finish();
+        else if (!this.reading && this.sessionId && this.toolCalls.has(meta.callId as string))
+          finish(this.matchesToolCall(meta, tool));
+      };
+      const timer = setTimeout(invalidated, 20_000);
+      this.on("toolObserved", check);
+      this.on("toolInvalidated", invalidated);
+      signal.addEventListener("abort", invalidated, { once: true });
+      check();
+    });
   }
   async close(): Promise<void> {
     this.stopped = true;
     this.hubReady = false;
     this.toolCalls.clear();
+    this.emit("toolInvalidated");
     this.unwatch?.();
     this.unwatch = undefined;
     this.requests.clear();

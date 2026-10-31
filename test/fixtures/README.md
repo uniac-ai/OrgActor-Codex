@@ -1,0 +1,3 @@
+The immutable Hub package is the checked public wire/type checkpoint from [AgentOrg PR 55](https://github.com/uniac-ai/AgentOrg/pull/55), source `cca137062a9c2d979d134da9a191739d9fefe9c4`. The authoritative Tool descriptions are used without a local override.
+
+`agentorg-cli-cca13706.tgz` has SHA256 `754b60239ddff71946d328c769efefcb0845ee0db651aa510b30b0c4e9767dfe`. It is a test-only dependency installed from this exact file. Tests launch its public `agentorg-server` command against an owned temporary home and use only the exported Actor/contract APIs. No sibling checkout or private server/storage imports are used. Never point this schema-8 server at an existing live schema-7 home.

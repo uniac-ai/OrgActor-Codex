@@ -74,18 +74,14 @@ export class ActorHubSession {
   async call(
     name: string,
     input: Record<string, unknown>,
-    cause?: string | null,
     timeout = 60_000,
   ): Promise<CallToolResult> {
-    return this.client.callTool(
-      { name, arguments: input, ...(cause ? { _meta: { "agentorg/cause": cause } } : {}) },
-      undefined,
-      { timeout },
-    ) as Promise<CallToolResult>;
+    return this.client.callTool({ name, arguments: input }, undefined, {
+      timeout,
+    }) as Promise<CallToolResult>;
   }
   alias(toolId: string, name: string): string {
-    const group = catalogOf(this.tools).find((t) => t.id === toolId);
-    const alias = group?.interfaces.find((i) => i.interface.name === name)?.call;
+    const alias = catalogOf(this.tools).get(toolId)?.interfaces.get(name);
     if (!alias)
       throw new Fault(
         "HUB_INTERFACE_UNAVAILABLE",
