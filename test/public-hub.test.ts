@@ -346,9 +346,11 @@ for (const delayed of ["item", "turn-and-item"])
         params: {
           threadId: "native-thread",
           turnId: "input-turn",
+          itemId: "input-item",
+          isBlocking: true,
           questions: [
             {
-              id: "choice",
+              id: "native-choice-id",
               header: "Choice",
               question: "Proceed?",
               isOther: false,
@@ -367,10 +369,13 @@ for (const delayed of ["item", "turn-and-item"])
     assert.equal(nativeForm.workID, undefined);
     assert.equal(nativeForm.requesterID, actor.bootstrap.actorId);
     assert.deepEqual(nativeForm.respondentIDs, [hub.rootId]);
-    const answers = {
-      decision: "accept",
-      input: JSON.stringify({ answers: { choice: { answers: ["yes"] } } }),
-    };
+    assert.equal(nativeForm.fields.length, 1);
+    assert.ok(
+      nativeForm.fields.every(
+        (field) => !field.label.includes("native-choice-id") && !field.label.includes("JSON"),
+      ),
+    );
+    const answers = { [nativeForm.fields[0].name]: "yes" };
     assert.equal(
       (
         await outsider.call("form_respond", {
@@ -403,7 +408,7 @@ for (const delayed of ["item", "turn-and-item"])
       "done",
     );
     await until(() => state.answers.length === 1);
-    assert.deepEqual(state.answers, [{ answers: { choice: { answers: ["yes"] } } }]);
+    assert.deepEqual(state.answers, [{ answers: { "native-choice-id": { answers: ["yes"] } } }]);
     assert.ok(formReads.length > 0 && formReads.every((id) => id === nativeForm.formID));
     assert.ok(binding.answerAttempt);
     const stillOpen = await root.call("form_get", { formID: nativeForm.formID });

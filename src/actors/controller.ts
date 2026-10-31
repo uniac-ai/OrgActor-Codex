@@ -11,7 +11,8 @@ import {
   type RuntimeStore,
   type Submission,
 } from "../runtime/index.js";
-import { requestReview, responseFor, supportedRequests } from "./requests.js";
+import { nativeForm } from "./forms.js";
+import { supportedRequests } from "./requests.js";
 
 type PendingRequest = { id: string | number; method: string; params: any };
 export class ActorController extends EventEmitter {
@@ -527,23 +528,24 @@ export class ActorController extends EventEmitter {
     const key = hash(
       JSON.stringify([this.bootstrap.threadId, sessionId, request.params.turnId, id]),
     );
-    const review = `${requestReview(request.method, request.params)}\nRequest reference ${key}.`;
-    const input = BUILTINS.form_create.request.safeParse({
-      respondentIDs: [self.manager],
-      fields: [
-        {
-          name: "decision",
-          label: review,
-          required: true,
-          options: ["accept", "decline", "cancel"],
-        },
-        { name: "input", label: "Additional input (JSON when requested)", required: false },
-      ],
-    });
-    if (!input.success) {
-      this.lastError = "The native request cannot fit a review Form and remains pending.";
+    let projection: ReturnType<typeof nativeForm>;
+    try {
+      projection = nativeForm(
+        request.method,
+        request.params,
+        hash(JSON.stringify([key, request.method, request.params])),
+      );
+    } catch (error) {
+      this.lastError =
+        error instanceof Fault
+          ? error.message
+          : "This native input shape requires its native input owner and remains pending.";
       return;
     }
+    const input = BUILTINS.form_create.request.parse({
+      respondentIDs: [self.manager],
+      fields: projection.fields,
+    });
     const legacy = this.bootstrap.approvals[id];
     if (legacy && !legacy.sessionId && legacy.state !== "resolved") {
       this.lastError =
@@ -558,7 +560,7 @@ export class ActorController extends EventEmitter {
         binding.turnId !== this.turnId ||
         binding.answerer !== self.manager ||
         binding.method !== request.method ||
-        JSON.stringify(binding.fields) !== JSON.stringify(input.data.fields))
+        JSON.stringify(binding.fields) !== JSON.stringify(input.fields))
     )
       return;
     if (!binding) {
@@ -570,7 +572,7 @@ export class ActorController extends EventEmitter {
         answerer: self.manager,
         sessionId,
         inputIds: [...this.appliedInputs],
-        fields: input.data.fields,
+        fields: input.fields,
         state: "asking",
       };
       this.bootstrap.approvals[key] = binding;
@@ -599,7 +601,7 @@ export class ActorController extends EventEmitter {
         binding.formId = null;
         this.store.save();
         try {
-          const form = await readForm("form_create", input.data);
+          const form = await readForm("form_create", input);
           if (
             this.store.data.actors[this.bootstrap.actorId] !== this.bootstrap ||
             this.bootstrap.approvals?.[key] !== binding
@@ -659,12 +661,15 @@ export class ActorController extends EventEmitter {
           JSON.stringify(binding.inputIds) !== JSON.stringify([...this.appliedInputs])
         )
           return;
-        const response = responseFor(
-          request.method,
-          request.params,
-          answered.decision,
-          answered.input ?? null,
-        );
+        let response: object;
+        try {
+          response = projection.response(answered);
+        } catch {
+          this.lastError =
+            "Revise the Form response to match the requested values and constraints.";
+          await delay(2000, undefined, { signal: this.closed.signal, ref: false });
+          continue;
+        }
         binding.answerAttempt = { formRevision: form.revision, response };
         this.store.save();
         this.lastError =
@@ -678,11 +683,17 @@ export class ActorController extends EventEmitter {
   async checkRequest(id: string): Promise<void> {
     if (!this.requests.has(id))
       throw new Fault("REQUEST_GONE", "This native request has already resolved.");
+    const bound = Object.values(this.bootstrap.approvals ?? {}).some(
+      (binding) =>
+        binding.requestId === id && binding.sessionId === this.sessionId && !!binding.formId,
+    );
     throw new Fault(
       "ANSWER_AT_OWNER",
       this.bootstrap.config.approvalAuthority === "desktop"
         ? "Answer this request in Codex Desktop."
-        : "Respond to the matching Form as its designated respondent.",
+        : bound
+          ? "Respond to the matching Form as its designated respondent."
+          : "This request has no bound Form and remains pending for its native input owner.",
     );
   }
   private async watchInbox(): Promise<void> {

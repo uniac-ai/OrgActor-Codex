@@ -1,22 +1,9 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { readFileSync } from "node:fs";
 import test from "node:test";
-import { connectClient } from "@agentorg/cli/actor";
 import { BUILTINS, Form } from "@agentorg/cli/contract";
-import { startPublicHub } from "../scripts/hub.js";
-import { ActorController } from "../src/actors/controller.js";
-import { ActorHubSession } from "../src/hub/actor.js";
-import { type Bootstrap, RuntimeStore } from "../src/runtime/index.js";
-
-function deferred<T>() {
-  let resolve!: (value: T) => void;
-  const promise = new Promise<T>((r) => {
-    resolve = r;
-  });
-  return { promise, resolve };
-}
+import { RuntimeStore } from "../src/runtime/index.js";
+import { deferred, nativeFormFixture } from "./native-form-fixture.js";
 
 for (const mode of [
   "request-resolved",
@@ -28,72 +15,13 @@ for (const mode of [
   test(`held Form creation preserves correspondence after ${mode}`, {
     timeout: 10_000,
   }, async (t) => {
-    const owned = mkdtempSync(join(tmpdir(), "orgactor-held-form-"));
-    const hub = await startPublicHub(join(owned, "hub"), "fixture-provider", "OWNED_FIXTURE");
     const release = deferred<void>(),
       committed = deferred<string>();
-    let actor: ActorController | undefined;
-    let root: Awaited<ReturnType<typeof connectClient>> | undefined;
-    let routed = Promise.resolve();
-    t.after(async () => {
-      release.resolve();
-      await actor?.close();
-      await routed.catch(() => {});
-      await root?.close();
-      await hub.close();
-      rmSync(owned, { recursive: true, force: true });
-    });
-    root = await connectClient({
-      url: hub.url,
-      actorId: hub.rootId,
-      credential: hub.rootCredential,
-    });
-    const created = await root.call("actor_create", {
-      name: "held-form",
-      purpose: "Owned model-free fixture",
-    });
-    assert.ok(created.state === "done");
-    const child = BUILTINS.actor_create.response.parse(created.value);
-    const store = new RuntimeStore(join(owned, "provider"));
-    const bootstrap: Bootstrap = {
-      actorId: child.actor.id,
-      credential: child.credential,
-      hubUrl: hub.url,
-      threadId: "fixture-thread",
-      bridgeToken: "OWNED_CAPABILITY",
-      enabled: true,
-      config: { approvalAuthority: "hub" },
-      submissions: [],
-    };
-    store.data.actors[child.actor.id] = bootstrap;
-    store.save();
-    let nativeAnswers = 0,
-      reads = 0,
+    t.after(() => release.resolve());
+    const { actor, root, child, store, bootstrap, session, answers, event, routed } =
+      await nativeFormFixture(t);
+    let reads = 0,
       creates = 0;
-    const adapter = {
-      read: async () => ({
-        thread: {
-          id: bootstrap.threadId,
-          sessionId: "fixture-session",
-          turns: [{ id: "fixture-turn", status: "inProgress", items: [] }],
-        },
-      }),
-      answer: () => {
-        nativeAnswers++;
-      },
-    };
-    actor = new ActorController(bootstrap, store, async () => adapter as any);
-    const controller = actor;
-    const session = new ActorHubSession(hub.url);
-    actor.hub = session;
-    await session.open(child.actor.id, child.credential);
-    actor.adapter = adapter as any;
-    await actor.reconcile();
-    const route = (actor as any).routeApproval.bind(actor);
-    (actor as any).routeApproval = (id: string) => {
-      routed = route(id);
-      return routed;
-    };
     const call = session.call.bind(session);
     session.call = async (name, args, timeout) => {
       if (
@@ -110,12 +38,6 @@ for (const mode of [
       }
       return result;
     };
-    const event = (method: string, params: object, id?: string) =>
-      (controller as any).observe({
-        method,
-        params: { threadId: bootstrap.threadId, ...params },
-        ...(id ? { id } : {}),
-      });
     event(
       "item/permissions/requestApproval",
       { turnId: "fixture-turn", permissions: { network: { enabled: true } } },
@@ -142,7 +64,7 @@ for (const mode of [
     const originalBeforeReply = structuredClone(original);
     const diskBeforeReply = JSON.parse(readFileSync(store.file, "utf8"));
     release.resolve();
-    await routed;
+    await routed();
     const disk = JSON.parse(readFileSync(store.file, "utf8"));
     const binding = disk.actors[child.actor.id].approvals[key];
     if (mode.endsWith("replaced")) {
@@ -156,14 +78,13 @@ for (const mode of [
       );
       assert.deepEqual(binding, { ...originalBeforeReply, formId: formID });
       assert.equal(
-        new RuntimeStore(join(owned, "provider")).data.actors[child.actor.id].approvals?.[key]
-          .formId,
+        new RuntimeStore(store.root).data.actors[child.actor.id].approvals?.[key].formId,
         formID,
       );
     }
     assert.equal(creates, 1);
     assert.equal(reads, 0);
-    assert.equal(nativeAnswers, 0);
+    assert.equal(answers.length, 0);
     assert.equal(original.answerAttempt, undefined);
     const publicResult = await root.call("form_list", { requesterID: child.actor.id });
     assert.ok(publicResult.state === "done");

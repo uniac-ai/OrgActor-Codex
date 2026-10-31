@@ -509,21 +509,15 @@ test("native response union grants requested scope, validates question IDs and d
     },
   );
   assert.deepEqual(
-    responseFor(
-      "item/tool/requestUserInput",
-      { questions: [{ id: "a" }] },
-      "accept",
-      '{"answers":{"a":{"answers":["yes"]}}}',
-    ),
+    responseFor("item/tool/requestUserInput", { questions: [{ id: "a" }] }, "accept", {
+      answers: { a: { answers: ["yes"] } },
+    }),
     { answers: { a: { answers: ["yes"] } } },
   );
   assert.throws(() =>
-    responseFor(
-      "item/tool/requestUserInput",
-      { questions: [{ id: "a" }] },
-      "accept",
-      '{"answers":{"foreign":{"answers":["yes"]}}}',
-    ),
+    responseFor("item/tool/requestUserInput", { questions: [{ id: "a" }] }, "accept", {
+      answers: { foreign: { answers: ["yes"] } },
+    }),
   );
   assert.deepEqual(responseFor("mcpServer/elicitation/request", {}, "decline", null), {
     action: "decline",

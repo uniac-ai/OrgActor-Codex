@@ -204,7 +204,7 @@ test("standalone Form binds current manager and exact native scope; one response
   (f.actor.hub as any).call = async (name: string, args: any) => {
     if (name === "team") return { structuredContent: team() };
     if (name === "form_create") {
-      created = form(args, { responses: { manager: { decision: "accept", input: "" } } });
+      created = form(args, { responses: { manager: { [args.fields[0].name]: "Approve" } } });
       return { structuredContent: created };
     }
     assert.equal(name, "form_get");
@@ -216,7 +216,7 @@ test("standalone Form binds current manager and exact native scope; one response
   await settle();
   assert.equal(created.workID, undefined);
   assert.deepEqual(created.respondentIDs, ["manager"]);
-  assert.match(created.fields[0].label, /Request reference [a-f0-9]{64}/);
+  assert.match(created.fields[0].name, /field_[a-f0-9]{64}_0/);
   assert.equal(created.fields[0].label.includes("native session session"), false);
   assert.deepEqual(f.answers, [
     { id: "request", response: { permissions: { network: { enabled: true } }, scope: "turn" } },
@@ -254,7 +254,10 @@ for (const invalid of [
         return { structuredContent: created };
       }
       assert.equal(name, "form_get");
-      const answer = { ...created, responses: { manager: { decision: "accept", input: "" } } };
+      const answer = {
+        ...created,
+        responses: { manager: { [created.fields[0].name]: "Approve" } },
+      };
       if (invalid === "requester") answer.requesterID = "other";
       if (invalid === "respondent") answer.respondentIDs = ["other"];
       if (invalid === "fields") answer.fields = [{ name: "fake", label: "fake", required: false }];
@@ -291,7 +294,7 @@ test("lost Form issuance recovers one exact requester's Form, never reissues or 
     if (name === "team") return { structuredContent: team() };
     if (name === "form_create") {
       creates++;
-      created = form(args, { responses: { manager: { decision: "accept" } } });
+      created = form(args, { responses: { manager: { [args.fields[0].name]: "Approve" } } });
       throw new Error("lost creation reply");
     }
     if (name === "form_list") {
