@@ -40,7 +40,7 @@ test("Actor Hub peer consumes the Hub catalog and rejects reverse interface requ
                 "agentorg/tool": {
                   id: "hub:messages",
                   name: "messages",
-                  interface: "messages",
+                  interface: "message_list",
                   one_way: false,
                   long_running: false,
                 },
@@ -50,8 +50,8 @@ test("Actor Hub peer consumes the Hub catalog and rejects reverse interface requ
         });
       else if (m.method === "tools/call") {
         assert.equal(m.params.name, "actual_inbox_alias");
-        assert.deepEqual(m.params.arguments, { unread: true, wait: 0 });
-        reply({ content: [], structuredContent: { messages: [], cursor: 0 } });
+        assert.deepEqual(m.params.arguments, { direction: "incoming", after: 0, limit: 100 });
+        reply({ content: [], structuredContent: { items: [], after: 0 } });
       }
     });
   });
@@ -61,11 +61,16 @@ test("Actor Hub peer consumes the Hub catalog and rejects reverse interface requ
     await new Promise<void>((resolve) => hub.close(() => resolve()));
   });
   await session.open("reader", "FAKE_ACTOR_CREDENTIAL");
-  assert.equal(session.alias("hub:messages", "messages"), "actual_inbox_alias");
+  assert.equal(session.alias("hub:messages", "message_list"), "actual_inbox_alias");
   assert.deepEqual(
-    (await session.call(session.alias("hub:messages", "messages"), { unread: true, wait: 0 }))
-      .structuredContent,
-    { messages: [], cursor: 0 },
+    (
+      await session.call(session.alias("hub:messages", "message_list"), {
+        direction: "incoming",
+        after: 0,
+        limit: 100,
+      })
+    ).structuredContent,
+    { items: [], after: 0 },
   );
   for (const [index, request] of [
     {

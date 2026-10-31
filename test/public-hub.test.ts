@@ -37,6 +37,7 @@ for (const delayed of ["item", "turn-and-item"])
     const state = {
       discovery: false,
       nativeStarts: 0,
+      answers: [] as unknown[],
       guardReached: false,
       responseReleased: false,
       failure: undefined as unknown,
@@ -60,7 +61,10 @@ for (const delayed of ["item", "turn-and-item"])
         const reply = (result: any) => socket.send(JSON.stringify({ id: m.id, result }));
         const event = (method: string, params: any) =>
           socket.send(JSON.stringify({ method, params: { threadId: "native-thread", ...params } }));
-        if (m.method === "initialize") reply({});
+        if (m.id === "native-input" && !m.method) {
+          state.answers.push(m.result);
+          event("serverRequest/resolved", { requestId: m.id });
+        } else if (m.method === "initialize") reply({});
         else if (m.method === "thread/start") {
           void (async () => {
             const actor = Object.values(runtime.store.data.actors)[0];
@@ -72,7 +76,7 @@ for (const delayed of ["item", "turn-and-item"])
               }),
             );
             const list = await mcp.listTools();
-            assert.equal(list.tools.length, 15);
+            assert.equal(list.tools.length, 23);
             assert.equal(
               list.tools.find((tool) => tool.name === "team")?.description,
               state.teamDescription,
@@ -206,7 +210,7 @@ for (const delayed of ["item", "turn-and-item"])
     await runtime.provider.setEnabled(true);
     await until(() => runtime.provider.snapshot().connected);
     const publicTools = await root.available();
-    assert.equal(publicTools.length, 7);
+    assert.equal(publicTools.length, 9);
     state.teamDescription = publicTools
       .find((tool) => tool.id === "hub:team")
       ?.interfaces.find((offer) => offer.interface.name === "team")?.interface.description;
@@ -232,9 +236,21 @@ for (const delayed of ["item", "turn-and-item"])
       assert.deepEqual(Object.keys(refused).sort(), ["state", "code", "message"].sort());
     }
     assert.equal(state.nativeStarts, 0);
-    assert.equal((await root.available()).flatMap((tool) => tool.interfaces).length, 15);
+    assert.equal((await root.available()).flatMap((tool) => tool.interfaces).length, 23);
+    for (const name of [
+      "messages",
+      "message_read",
+      "message_acknowledge",
+      "message_handle",
+      "question_ask",
+      "question_answer",
+      "questions",
+      "progress",
+      "progress_set",
+    ])
+      assert.equal((await root.call(name, {})).state, "refused");
     const message = await root.call("message_send", {
-      to: value.actor.id,
+      recipientID: value.actor.id,
       text: "Owned inbox decision",
     });
     assert.ok(message.state === "done");
@@ -242,7 +258,7 @@ for (const delayed of ["item", "turn-and-item"])
     await until(() => !!state.failure || actor.bootstrap.submissions[0]?.state === "done");
     assert.equal(state.failure, undefined);
     const input = actor.bootstrap.submissions[0];
-    assert.equal(input.id, `message:${sent.id}`);
+    assert.equal(input.id, `message:${sent.messageID}`);
     assert.equal(input.from, hub.rootId);
     assert.equal(input.cause, null);
     assert.equal(input.result?.output, "OWNED_FIXTURE_COMPLETE");
@@ -258,4 +274,139 @@ for (const delayed of ["item", "turn-and-item"])
       }),
     );
     assert.equal(runtime.bridge.requests, 1);
+    const outsiderCreated = await root.call("actor_create", {
+      name: "outsider",
+      purpose: "Owned role fixture",
+    });
+    assert.ok(outsiderCreated.state === "done");
+    const outsiderValue = BUILTINS.actor_create.response.parse(outsiderCreated.value);
+    const outsider = await connectClient({
+      url: hub.url,
+      actorId: outsiderValue.actor.id,
+      credential: outsiderValue.credential,
+    });
+    t.after(() => outsider.close());
+    const emptyCreated = await outsider.call("form_create", {
+      respondentIDs: [hub.rootId],
+      fields: [{ name: "optional", label: "Optional", required: false }],
+    });
+    assert.ok(emptyCreated.state === "done");
+    const emptyForm = BUILTINS.form_create.response.parse(emptyCreated.value);
+    const awaitingBefore = await root.call("form_list", { awaitingActorID: hub.rootId });
+    assert.ok(awaitingBefore.state === "done");
+    assert.ok(
+      BUILTINS.form_list.response
+        .parse(awaitingBefore.value)
+        .items.some((f) => f.formID === emptyForm.formID),
+    );
+    const emptyAnswered = await root.call("form_respond", {
+      formID: emptyForm.formID,
+      expectedRevision: emptyForm.revision,
+      answers: {},
+    });
+    assert.ok(emptyAnswered.state === "done");
+    const emptyResponse = BUILTINS.form_respond.response.parse(emptyAnswered.value);
+    assert.ok(Object.hasOwn(emptyResponse.responses, hub.rootId));
+    assert.deepEqual(emptyResponse.responses[hub.rootId], {});
+    const awaitingAfter = await root.call("form_list", { awaitingActorID: hub.rootId });
+    assert.ok(awaitingAfter.state === "done");
+    assert.equal(
+      BUILTINS.form_list.response
+        .parse(awaitingAfter.value)
+        .items.some((f) => f.formID === emptyForm.formID),
+      false,
+    );
+
+    const configured = await fetch(`${runtime.url}/api/actors/${value.actor.id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ approvalAuthority: "hub" }),
+    });
+    assert.equal(configured.status, 200);
+    const formReads: string[] = [];
+    assert.ok(actor.hub);
+    const call = actor.hub.call.bind(actor.hub);
+    actor.hub.call = async (name, args, timeout) => {
+      if (name === "form_list")
+        assert.fail("A known private Form must not scan organization Forms");
+      if (name === "form_get") formReads.push(String(args.formID));
+      return call(name, args, timeout);
+    };
+    const socket = [...native.clients][0];
+    socket.send(
+      JSON.stringify({
+        method: "turn/started",
+        params: { threadId: "native-thread", turn: { id: "input-turn" } },
+      }),
+    );
+    socket.send(
+      JSON.stringify({
+        id: "native-input",
+        method: "item/tool/requestUserInput",
+        params: {
+          threadId: "native-thread",
+          turnId: "input-turn",
+          questions: [
+            {
+              id: "choice",
+              header: "Choice",
+              question: "Proceed?",
+              isOther: false,
+              isSecret: false,
+              options: [{ label: "yes", description: "Proceed" }],
+            },
+          ],
+        },
+      }),
+    );
+    await until(() => Object.values(actor.bootstrap.approvals ?? {}).some((b) => !!b.formId));
+    const binding = Object.values(actor.bootstrap.approvals ?? {})[0];
+    const shared = await outsider.call("form_get", { formID: binding.formId });
+    assert.ok(shared.state === "done");
+    const nativeForm = BUILTINS.form_get.response.parse(shared.value);
+    assert.equal(nativeForm.workID, undefined);
+    assert.equal(nativeForm.requesterID, actor.bootstrap.actorId);
+    assert.deepEqual(nativeForm.respondentIDs, [hub.rootId]);
+    const answers = {
+      decision: "accept",
+      input: JSON.stringify({ answers: { choice: { answers: ["yes"] } } }),
+    };
+    assert.equal(
+      (
+        await outsider.call("form_respond", {
+          formID: nativeForm.formID,
+          expectedRevision: nativeForm.revision,
+          answers,
+        })
+      ).state,
+      "refused",
+    );
+    assert.equal(
+      (
+        await root.call("form_close", {
+          formID: nativeForm.formID,
+          expectedRevision: nativeForm.revision,
+          status: "resolved",
+          resolution: "approve",
+        })
+      ).state,
+      "refused",
+    );
+    assert.equal(
+      (
+        await root.call("form_respond", {
+          formID: nativeForm.formID,
+          expectedRevision: nativeForm.revision,
+          answers,
+        })
+      ).state,
+      "done",
+    );
+    await until(() => state.answers.length === 1);
+    assert.deepEqual(state.answers, [{ answers: { choice: { answers: ["yes"] } } }]);
+    assert.ok(formReads.length > 0 && formReads.every((id) => id === nativeForm.formID));
+    assert.ok(binding.answerAttempt);
+    const stillOpen = await root.call("form_get", { formID: nativeForm.formID });
+    assert.ok(stillOpen.state === "done");
+    assert.equal(BUILTINS.form_get.response.parse(stillOpen.value).status, "open");
   });

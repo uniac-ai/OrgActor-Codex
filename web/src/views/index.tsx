@@ -407,7 +407,7 @@ function ActorsView(p: ActorsFeature) {
                     Answer in{" "}
                     {actor.approvalAuthority === "desktop"
                       ? "Codex Desktop"
-                      : "the Hub question as its designated answerer"}
+                      : "the Form as its designated respondent"}
                     .
                   </p>
                 </div>

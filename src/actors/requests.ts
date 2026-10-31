@@ -24,8 +24,8 @@ export function requestReview(method: string, params: any): string {
   if (method === "item/fileChange/requestApproval")
     return `Codex requests file-change approval.\nGrant root: ${params.grantRoot ?? "the current workspace"}${reason}`;
   if (method === "item/tool/requestUserInput")
-    return `Codex requests input. Supply {"answers":{questionId:{"answers":[...]}}} JSON in the Hub answer text when accepting.\nQuestions: ${JSON.stringify(params.questions)}`;
-  return `Codex MCP server ${params.serverName ?? ""} requests ${params.mode ?? "form"} input.\n${params.message ?? ""}\n${params.mode === "url" ? params.url : `Supply requested JSON in the answer text: ${JSON.stringify(params.requestedSchema)}`}`;
+    return `Codex requests input. Supply {"answers":{questionId:{"answers":[...]}}} JSON in the Form input field when accepting.\nQuestions: ${JSON.stringify(params.questions)}`;
+  return `Codex MCP server ${params.serverName ?? ""} requests ${params.mode ?? "form"} input.\n${params.message ?? ""}\n${params.mode === "url" ? params.url : `Supply requested JSON in the Form input field: ${JSON.stringify(params.requestedSchema)}`}`;
 }
 /** The designated Hub answer can grant only the native request's own requested permissions. */
 export function responseFor(

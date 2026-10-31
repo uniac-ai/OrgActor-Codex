@@ -11,6 +11,7 @@ import { type WebSocket, WebSocketServer } from "ws";
 import type { ActorController } from "../src/actors/controller.js";
 import { RuntimeStore } from "../src/runtime/index.js";
 import { startServer } from "../src/server/index.js";
+import { message } from "./workspace-fixtures.js";
 
 const tool = (id: string, name: string, alias: string) => ({
   name: alias,
@@ -27,8 +28,7 @@ const tool = (id: string, name: string, alias: string) => ({
 });
 const tools = [
   tool("hub:team", "team", "team_alias"),
-  tool("hub:messages", "messages", "inbox_alias"),
-  tool("hub:messages", "message_read", "read_alias"),
+  tool("hub:messages", "message_list", "inbox_alias"),
 ];
 async function until(description: string, read: () => boolean) {
   for (let i = 0; i < 500; i++) {
@@ -56,7 +56,6 @@ for (const mode of ["fresh", "unknown", "offline", "rejected", "lost"])
       actorClosed: false,
       providerReply: undefined as any,
       inboxDeliveries: 0,
-      inboxReads: 0,
       hubMethods: [] as string[],
       actorAdmissions: 0,
       causes: [] as (string | undefined)[],
@@ -117,23 +116,30 @@ for (const mode of ["fresh", "unknown", "offline", "rejected", "lost"])
             structuredContent: value,
           });
         } else if (m.method === "tools/call" && m.params.name === "inbox_alias") {
-          assert.deepEqual(m.params.arguments, { unread: true, limit: 200, wait: 20 });
+          const after = m.params.arguments.after;
+          assert.deepEqual(m.params.arguments, { direction: "incoming", after, limit: 100 });
           const deliver = () => {
             state.inboxDeliveries++;
             respond({
               content: [],
               structuredContent: {
-                messages: [{ id: "inbox-message", text: "Mock first input", from: "root" }],
-                cursor: 1,
+                items:
+                  after === 0
+                    ? [
+                        {
+                          ...message(1, "fresh-actor"),
+                          messageID: "inbox-message",
+                          text: "Mock first input",
+                          senderID: "root",
+                        },
+                      ]
+                    : [],
+                after: 1,
               },
             });
           };
           if (!state.inboxDeliveries) deliverInbox = deliver;
-          else if (state.inboxDeliveries === 1) deliver();
-        } else if (m.method === "tools/call" && m.params.name === "read_alias") {
-          assert.deepEqual(m.params.arguments, { ids: ["inbox-message"] });
-          state.inboxReads++;
-          respond({ content: [], structuredContent: {} });
+          else deliver();
         } else if (m.id === "create") state.providerReply = m;
       }),
     );
@@ -185,7 +191,7 @@ for (const mode of ["fresh", "unknown", "offline", "rejected", "lost"])
             )
             .then(() => mcp.listTools())
             .then(async (list) => {
-              assert.equal(list.tools.length, 3);
+              assert.equal(list.tools.length, 2);
               assert.equal(startReplied, false);
               assert.equal(preparedActor.hubReady, true);
               assert.equal(preparedActor.bootstrap.threadId, "");
@@ -448,10 +454,10 @@ for (const mode of ["fresh", "unknown", "offline", "rejected", "lost"])
     await until("Actor reads its own Hub inbox", () => !!deliverInbox);
     deliverInbox?.();
     await until(
-      "Locally chosen native turn settles and duplicate inbox delivery is acknowledged",
+      "Locally chosen native turn settles and its private cursor persists",
       () =>
         runtime.store.data.actors["fresh-actor"].submissions[0]?.state === "done" &&
-        state.inboxReads === 2,
+        runtime.store.data.actors["fresh-actor"].inbox?.after === 1,
     );
     const input = runtime.store.data.actors["fresh-actor"].submissions[0];
     assert.equal(input.result?.status, "completed");

@@ -109,16 +109,6 @@ export class SessionMcpBridge {
           ErrorCode.InvalidParams,
           "This bridge requires the current native session and tool call.",
         );
-      const meta = tool._meta?.["agentorg/tool"] as any;
-      if (
-        meta.id === "hub:questions" &&
-        meta.interface === "question_answer" &&
-        params.arguments?.recorded === true
-      )
-        throw new McpError(
-          ErrorCode.InvalidParams,
-          "Managed Actor inputs do not confer recorded human-answer authority. The designated Hub answerer must answer.",
-        );
       this.requests += 1;
       const wait = typeof params.arguments?.wait === "number" ? params.arguments.wait : 0;
       const result = await actor.hub.call(
@@ -126,6 +116,7 @@ export class SessionMcpBridge {
         params.arguments ?? {},
         Math.max(60_000, (wait + 30) * 1000),
       );
+      const meta = tool._meta?.["agentorg/tool"] as any;
       if (meta.id === "hub:actors" && meta.interface === "actor_create" && !result.isError)
         return this.projectCreated(result);
       return result;
