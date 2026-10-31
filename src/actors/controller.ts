@@ -600,7 +600,11 @@ export class ActorController extends EventEmitter {
         this.store.save();
         try {
           const form = await readForm("form_create", input.data);
-          if (!currentRequest()) return;
+          if (
+            this.store.data.actors[this.bootstrap.actorId] !== this.bootstrap ||
+            this.bootstrap.approvals?.[key] !== binding
+          )
+            return;
           binding.formId = form.formID;
           this.store.save();
         } catch {
