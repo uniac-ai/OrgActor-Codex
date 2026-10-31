@@ -42,8 +42,8 @@ const mcp = (requestedSchema: object, mode = "form") => ({
 });
 const result = (content: object) => ({ action: "accept", content, _meta: null });
 const otherOptions = [
+  { label: "Local", description: "Use local execution" },
   { label: "Other", description: "The named choice" },
-  { label: "Other (custom)", description: "Another named choice" },
 ];
 
 const cases: {
@@ -68,7 +68,11 @@ const cases: {
       }),
     ]),
     fields: 2,
-    answer: (f) => ({ [f.fields[0].name]: "Small", [f.fields[1].name]: "Fits our team" }),
+    answer: (f) => {
+      assert.deepEqual(f.fields[0].options, ["Small", "Large"]);
+      assert.equal(f.fields[1].options, undefined);
+      return { [f.fields[0].name]: "Small", [f.fields[1].name]: "Fits our team" };
+    },
     expected: {
       answers: {
         "native-question-choice": { answers: ["Small"] },
@@ -76,27 +80,32 @@ const cases: {
       },
     },
   },
-  {
-    name: "Other answer disambiguated from native option labels",
-    method: "item/tool/requestUserInput",
-    params: tool([question({ isOther: true, options: otherOptions })]),
-    fields: 2,
-    answer: (f) => {
-      assert.equal(f.fields[0].options?.length, 3);
-      const custom = f.fields[0].options?.at(-1);
-      assert.ok(custom && !otherOptions.some((o) => o.label === custom));
-      return { [f.fields[0].name]: custom, [f.fields[1].name]: "A different plan" };
+  ...[
+    { name: "a choice label", value: "Local", expected: ["Local"] },
+    {
+      name: "custom text with a choice label",
+      value: "Local with custom settings",
+      expected: ["Local with custom settings"],
     },
-    expected: { answers: { "native-question-choice": { answers: ["A different plan"] } } },
-  },
-  {
-    name: "native option named Other keeps its own meaning",
+    { name: "literal Other without secondary text", value: "Other", expected: ["Other"] },
+    { name: "an omitted value", expected: [] },
+    { name: "an explicitly empty value", value: "", expected: [""] },
+  ].map((c) => ({
+    name: `Other-enabled question accepts ${c.name}`,
     method: "item/tool/requestUserInput",
     params: tool([question({ isOther: true, options: otherOptions })]),
-    fields: 2,
-    answer: (f) => ({ [f.fields[0].name]: "Other", [f.fields[1].name]: "" }),
-    expected: { answers: { "native-question-choice": { answers: ["Other"] } } },
-  },
+    fields: 1,
+    answer: (f: Form) => {
+      const field = f.fields[0];
+      assert.equal(field.options, undefined);
+      assert.equal(field.required, false);
+      assert.match(field.label, /Enter a choice label or your own answer/);
+      for (const option of otherOptions)
+        assert.ok(field.label.includes(`${option.label}: ${option.description}`));
+      return c.value === undefined ? {} : { [field.name]: c.value };
+    },
+    expected: { answers: { "native-question-choice": { answers: c.expected } } },
+  })),
   {
     name: "present empty question response maps to the native empty answer array",
     method: "item/tool/requestUserInput",
@@ -228,6 +237,11 @@ for (const c of cases)
     release.resolve();
     await f.routed();
     assert.deepEqual(f.answers, [{ id: "fixture-request", response: c.expected }]);
+    assert.deepEqual(
+      Object.values(f.bootstrap.approvals ?? {})[0].answerAttempt?.response,
+      c.expected,
+    );
+    assert.doesNotMatch(f.actor.lastError ?? "", /Revise|does not match/);
     assert.equal(
       (c.method === "item/tool/requestUserInput" ? toolResponse : mcpResponse)(
         f.answers[0].response,

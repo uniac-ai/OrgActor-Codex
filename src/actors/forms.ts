@@ -95,47 +95,32 @@ export function nativeForm(method: string, params: any, reference: string) {
       );
     const fields: Form["fields"] = [];
     const rows = native.questions.map((q, index) => {
-      const selection = q.options?.length
-        ? choices(
-            q.options.map((o) => o.label),
-            q.options.map((o) => o.label),
-            `questions.${index}.options`,
-          )
-        : undefined;
-      const primary = name(fields.length);
-      let other: string | undefined;
-      if (selection && q.isOther) {
-        other = "Other";
-        while (selection.display.includes(other)) other += " (custom)";
-      }
+      const selection =
+        !q.isOther && q.options?.length
+          ? choices(
+              q.options.map((o) => o.label),
+              q.options.map((o) => o.label),
+              `questions.${index}.options`,
+            )
+          : undefined;
+      const primary = name(index);
       fields.push({
         name: primary,
         label: [
           q.header,
           q.question,
           ...(q.options ?? []).map((o) => `${o.label}: ${o.description}`),
+          q.isOther && q.options?.length ? "Enter a choice label or your own answer." : "",
         ]
           .filter(Boolean)
           .join("\n"),
         required: false,
-        ...(selection ? { options: [...selection.display, ...(other ? [other] : [])] } : {}),
+        ...(selection ? { options: selection.display } : {}),
       });
-      const extra = other ? name(fields.length) : undefined;
-      if (extra)
-        fields.push({
-          name: extra,
-          label: `Other answer for ${q.header || q.question} (only when ${other} is selected)`,
-          required: false,
-        });
       return {
         id: q.id,
         value: (answers: Record<string, string>) => {
           const value = answers[primary];
-          if (extra && value === other) {
-            if (!Object.hasOwn(answers, extra)) return invalid();
-            return [answers[extra]];
-          }
-          if (extra && answers[extra]?.trim()) return invalid();
           return !Object.hasOwn(answers, primary) || (selection && !value.trim())
             ? []
             : [selection?.value(value) ?? value];
