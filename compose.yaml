@@ -1,0 +1,17 @@
+services:
+  orgactor-codex:
+    build: .
+    ports:
+      - "127.0.0.1:8787:8787"
+    environment:
+      ORGACTOR_HOME: /data
+      HOST: 0.0.0.0
+      PORT: "8787"
+      HUB_URL: ${HUB_URL:-}
+      PROVIDER_ID: ${PROVIDER_ID:-}
+      PROVIDER_CREDENTIAL: ${PROVIDER_CREDENTIAL:-}
+    volumes:
+      - runtime:/data
+    init: true
+volumes:
+  runtime:

@@ -1,0 +1,33 @@
+{
+  "sourceCommit": "f28eb06300e8c98e1a1fc82b8a6317a2b73d3489",
+  "observedAt": "2026-10-30T17:38:54.400Z",
+  "nativeCleanupSuccess": true,
+  "unresolved": [],
+  "retained": [
+    {
+      "threadId": "01a18de3-8d55-7501-b0a6-ec2a24f2b768",
+      "title": "OrgActor-Codex E2E act_0d2889e72f",
+      "state": "idle",
+      "activeTurn": false,
+      "registeredTerminals": 0,
+      "reason": "One idle proof session retained for manager review; no active turn or background terminal."
+    }
+  ],
+  "archivedOwnedThreadIds": [
+    "01a18dd1-d712-7592-9ab3-adfcc7da5ec8",
+    "01a18dd2-9c91-7981-bf7a-1fd877b5cd72",
+    "01a18dd2-9dae-7602-b5af-60efd501ca1e",
+    "01a18de3-8c33-7573-bd66-1c9ff743508b",
+    "01a18dd1-d80f-78d0-8a28-079ca93da3f2"
+  ],
+  "previousOwnedProof": {
+    "threadId": "01a18dd1-d80f-78d0-8a28-079ca93da3f2",
+    "activeTurns": 0,
+    "registeredTerminals": 0,
+    "archived": true
+  },
+  "canonicalProofPreserved": true,
+  "otherLoadedThreadsPreserved": true,
+  "ownedModuleAndHubServers": "stopped; documented start commands supplied",
+  "desktopPixels": "unverified"
+}

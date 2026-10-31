@@ -1,0 +1,90 @@
+{
+  "sourceCommit": "f28eb06300e8c98e1a1fc82b8a6317a2b73d3489",
+  "hubRevision": "58dbececc84289f378f658b35504371106a7c760",
+  "adapter": "ssh",
+  "startedAt": "2026-10-30T17:37:41.453Z",
+  "finishedAt": "2026-10-30T17:38:10.162Z",
+  "success": true,
+  "offlineProvisioning": {
+    "actorId": "offline-d67237eb-8027-4f86-b3b6-934e753655d6",
+    "threadId": "01a18de3-8c33-7573-bd66-1c9ff743508b",
+    "nativeSessionCreated": true,
+    "privateHandoff": true,
+    "actorAdmission": false,
+    "modelTurns": 0
+  },
+  "admissionProbePreservesFactory": {
+    "sameConnection": true,
+    "describesAndCreates": true
+  },
+  "actor": {
+    "actorId": "act_0d2889e72f",
+    "threadId": "01a18de3-8d55-7501-b0a6-ec2a24f2b768",
+    "title": "OrgActor-Codex E2E act_0d2889e72f"
+  },
+  "nativeMcpReady": true,
+  "nativeRoundtrip": {
+    "marker": "ORGACTOR_MCP_OK",
+    "dispatchedCalls": 2,
+    "nativeTurnStatus": "completed"
+  },
+  "control": {
+    "turnId": "01a18de3-ac2d-7aa0-85e6-b1e2f9e95391",
+    "steering": {
+      "inputId": "steer-a2142ed0-157c-4690-8f17-2effcbc11a0a",
+      "turnId": "01a18de3-ac2d-7aa0-85e6-b1e2f9e95391",
+      "status": "accepted"
+    },
+    "steerClientIdObserved": true,
+    "steerMarker": "STEER_APPLIED",
+    "interruptTurnId": "01a18de3-e80a-7792-a33a-522862ba8fc8",
+    "interrupted": true
+  },
+  "nativeApplication": {
+    "inputId": "steer-a2142ed0-157c-4690-8f17-2effcbc11a0a",
+    "applied": true,
+    "steeringResult": {
+      "inputId": "steer-a2142ed0-157c-4690-8f17-2effcbc11a0a",
+      "turnId": "01a18de3-ac2d-7aa0-85e6-b1e2f9e95391",
+      "status": "completed",
+      "output": "STEER_APPLIED"
+    },
+    "controlResult": {
+      "inputId": "control-7ac8fbd1-e918-4823-ae0a-5ea720291399",
+      "turnId": "01a18de3-ac2d-7aa0-85e6-b1e2f9e95391",
+      "status": "completed",
+      "output": "STEER_APPLIED"
+    },
+    "queueProgressedToInterruptTurn": "01a18de3-e80a-7792-a33a-522862ba8fc8",
+    "interruptResult": {
+      "inputId": "interrupt-1cea7b73-be86-4396-92c7-094077234891",
+      "turnId": "01a18de3-e80a-7792-a33a-522862ba8fc8",
+      "status": "interrupted",
+      "output": "I\u2019ll run the command once and wait for it to finish."
+    }
+  },
+  "reconnect": {
+    "threadId": "01a18de3-8d55-7501-b0a6-ec2a24f2b768",
+    "duplicateInputs": 0
+  },
+  "quotaBefore": {
+    "ordinaryUsageAllowed": true,
+    "primary": {
+      "usedPercent": 27,
+      "windowDurationMins": 10080,
+      "resetsAt": 1793803514
+    },
+    "secondary": null
+  },
+  "quotaAfter": {
+    "ordinaryUsageAllowed": true,
+    "primary": {
+      "usedPercent": 27,
+      "windowDurationMins": 10080,
+      "resetsAt": 1793803514
+    },
+    "secondary": null
+  },
+  "renderedDesktopPixels": "unverified",
+  "liveRuntime": "Host Node server; container packaging checked separately in CI"
+}

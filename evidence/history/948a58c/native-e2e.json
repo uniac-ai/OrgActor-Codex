@@ -1,0 +1,67 @@
+{
+  "sourceCommit": "948a58ce4215d9c606f629d7f5cd119e41cacb06",
+  "hubRevision": "58dbececc84289f378f658b35504371106a7c760",
+  "adapter": "ssh",
+  "startedAt": "2026-10-30T17:18:20.257Z",
+  "finishedAt": "2026-10-30T17:18:52.273Z",
+  "success": true,
+  "offlineProvisioning": {
+    "actorId": "offline-d9e4c456-0c9f-4907-abb5-6c428f7ca033",
+    "threadId": "01a18dd1-d712-7592-9ab3-adfcc7da5ec8",
+    "nativeSessionCreated": true,
+    "privateHandoff": true,
+    "actorAdmission": false,
+    "modelTurns": 0
+  },
+  "admissionProbePreservesFactory": {
+    "sameConnection": true,
+    "describesAndCreates": true
+  },
+  "actor": {
+    "actorId": "act_fdfdafa3f2",
+    "threadId": "01a18dd1-d80f-78d0-8a28-079ca93da3f2",
+    "title": "OrgActor-Codex E2E act_fdfdafa3f2"
+  },
+  "nativeMcpReady": true,
+  "nativeRoundtrip": {
+    "marker": "ORGACTOR_MCP_OK",
+    "dispatchedCalls": 2,
+    "nativeTurnStatus": "completed"
+  },
+  "control": {
+    "turnId": "01a18dd1-fc64-78b2-962f-504836b6f96d",
+    "steering": {
+      "inputId": "steer-ca74477f-ae80-4876-bd30-f273803c4bbc",
+      "turnId": "01a18dd1-fc64-78b2-962f-504836b6f96d",
+      "status": "accepted"
+    },
+    "steerClientIdObserved": true,
+    "steerMarker": "STEER_APPLIED",
+    "interruptTurnId": "01a18dd2-4260-7b32-aed0-210229bac827",
+    "interrupted": true
+  },
+  "reconnect": {
+    "threadId": "01a18dd1-d80f-78d0-8a28-079ca93da3f2",
+    "duplicateInputs": 0
+  },
+  "quotaBefore": {
+    "ordinaryUsageAllowed": true,
+    "primary": {
+      "usedPercent": 26,
+      "windowDurationMins": 10080,
+      "resetsAt": 1793803514
+    },
+    "secondary": null
+  },
+  "quotaAfter": {
+    "ordinaryUsageAllowed": true,
+    "primary": {
+      "usedPercent": 26,
+      "windowDurationMins": 10080,
+      "resetsAt": 1793803514
+    },
+    "secondary": null
+  },
+  "renderedDesktopPixels": "unverified",
+  "liveRuntime": "Host Node server; container packaging checked separately in CI"
+}

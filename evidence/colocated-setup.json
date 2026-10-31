@@ -1,0 +1,24 @@
+{
+  "sourceCommit": "948a58ce4215d9c606f629d7f5cd119e41cacb06",
+  "hubRevision": "58dbececc84289f378f658b35504371106a7c760",
+  "adapter": "app-server-unix",
+  "startedAt": "2026-10-30T17:19:11.712Z",
+  "finishedAt": "2026-10-30T17:19:13.409Z",
+  "success": true,
+  "modelTurns": 0,
+  "offlineProvisioning": {
+    "actorId": "offline-eb1cbb50-142a-4831-9a76-28fa530a5673",
+    "threadId": "01a18dd2-9c91-7981-bf7a-1fd877b5cd72",
+    "nativeSessionCreated": true,
+    "privateHandoff": true,
+    "actorAdmission": false,
+    "modelTurns": 0
+  },
+  "admissionProbePreservesFactory": {
+    "sameConnection": true,
+    "describesAndCreates": true
+  },
+  "nativeMcpReady": true,
+  "cleanupSuccess": true,
+  "unresolved": []
+}
