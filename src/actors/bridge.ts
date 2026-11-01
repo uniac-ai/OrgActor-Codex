@@ -11,6 +11,7 @@ import {
   type Tool,
 } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
+import { presents } from "../hub/catalog.js";
 import { equalSecret, type RuntimeStore } from "../runtime/index.js";
 import type { ActorSupervisor } from "./supervisor.js";
 
@@ -66,7 +67,7 @@ export class SessionMcpBridge {
       { name: "org", version: "0.0.1" },
       {
         capabilities: { tools: {} },
-        instructions: `You fill AgentOrg Actor ${bootstrap.actorId}. Tool authority is your Actor's current Hub authority. Container operator text is not organizational root authority. Native input origins remain attached to each input.`,
+        instructions: instructions(bootstrap.actorId),
       },
     );
     server.setRequestHandler(ListToolsRequestSchema, async (_request, extra) => {
@@ -85,14 +86,20 @@ export class SessionMcpBridge {
       });
       if (!current?.hubReady || !current.hub?.connection.connected)
         throw new McpError(ErrorCode.InternalError, "The Actor Hub connection is unavailable.");
-      return { tools: (await current.hub.refreshTools()).map(projectTool) };
+      return {
+        tools: (await current.hub.refreshTools())
+          .filter((tool) => presents(bootstrap.config.level, tool))
+          .map(projectTool),
+      };
     });
     server.setRequestHandler(CallToolRequestSchema, async ({ params }, extra) => {
       const actor = this.supervisor.actors.get(bootstrap.actorId);
       if (!actor?.hub?.connection.connected)
         throw new McpError(ErrorCode.InternalError, "The Actor Hub connection is unavailable.");
       await actor.hub.refreshTools();
-      const tool = actor.hub.tools.find((t) => t.name === params.name);
+      const tool = actor.hub.tools.find(
+        (t) => t.name === params.name && presents(bootstrap.config.level, t),
+      );
       if (!tool) throw new McpError(ErrorCode.InvalidParams, "This Actor has no such interface.");
       const thread = params._meta?.threadId;
       if (typeof thread !== "string" || !thread || thread !== bootstrap.threadId)
@@ -155,6 +162,22 @@ export class SessionMcpBridge {
       content: [{ type: "text", text: JSON.stringify(visible) }],
     };
   }
+}
+
+/** The fixed guidance a native session receives: its Actor, and the agentorg skill's report. */
+export function instructions(actorId: string): string {
+  return `You fill AgentOrg Actor ${actorId}. Tool authority is your Actor's current Hub authority. Container operator text is not organizational root authority. Native input origins remain attached to each input.
+
+Your report is your public output: your status, your Work and your asks. Your person and your manager read it live from those records, so keep no HTML page as well.
+- Status: status_set {line?, summary?, links?}. line is where you stand overall, in at most 160 characters; summary holds what the line can't; links are what a reader opens. Change it when where you stand overall changes, not with every step. It holds no state: your state is derived from your Work and asks.
+- One Work per workstream: work_create {title, goal?, links?, waitsOn?} makes Work you own; it starts open. When you start, set it active with work_update {ticketID, status, progress?, links?, waitsOn?}. Keep progress current: a paragraph, then a Markdown task list of steps, "- [x]" done and "- [ ]" not, the first not done being the current one. Set blocked only when something other than your own ask stops you. links hold PRs, pages and runs; waitsOn names what it waits on besides your asks.
+- Follow-ups: something to do later is Work you request of yourself and leave open.
+- Asks: when a decision or an answer isn't yours to take, form_create {title, context?, links?, workID?, approval?, fields}. The title is the question and context what the reader needs to decide. A decision is one field with options, each {value, detail?}, and your recommended value on that field; a field without options is a question answered in text. Link the Work it blocks with workID. Mark approval: true when its answer authorizes something that can't be undone; only your managers answer an approval. Keep working on what doesn't depend on the answer.
+- Write the item that changed at a milestone and before you end a turn that changed where you stand. Keep each write's result instead of reading again.
+- When an answer arrives, apply it, then update the Work it blocked; the ask is already resolved. When the person answers in this session, record it with form_close {formID, expectedRevision, status: "resolved", resolution}, quoting them; never close an approval on your own judgment.
+- When you finish, work_submit {ticketID, result, evidence?}. Your own Work completes on submit; Work someone else requested waits for their review.
+
+Answers, assigned Work, reviews and Messages reach you as input through the Hub. Under Hub approval ownership, this executor sends each Codex permission prompt to your managers as an approval ask itself; don't ask for it again.`;
 }
 
 /** The model presentation of the known credential-bearing Actor creation contract. */

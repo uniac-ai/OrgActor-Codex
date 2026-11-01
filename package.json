@@ -18,7 +18,7 @@
   "dependencies": {
     "@hono/node-server": "2.1.5",
     "@modelcontextprotocol/sdk": "1.32.2",
-    "@agentorg/cli": "file:test/fixtures/agentorg-cli-79508a61.tgz",
+    "@agentorg/cli": "file:test/fixtures/agentorg-cli-1509561.tgz",
     "hono": "4.13.14",
     "ws": "8.22.0",
     "zod": "4.6.7"

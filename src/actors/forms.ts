@@ -4,7 +4,7 @@ import { ElicitRequestFormParamsSchema } from "@modelcontextprotocol/sdk/types.j
 import { AjvJsonSchemaValidator } from "@modelcontextprotocol/sdk/validation/ajv-provider.js";
 import { z } from "zod";
 import { Fault } from "../management/schema.js";
-import { requestReview, responseFor } from "./requests.js";
+import { clip, requestReview, requestTitle, responseFor } from "./requests.js";
 
 const Questions = z.object({
   threadId: z.string(),
@@ -40,19 +40,31 @@ const invalid = (): never => {
 const absentOptions = (value: Record<string, unknown>, keys: string[]) =>
   Object.fromEntries(Object.entries(value).filter(([key, v]) => v !== null || !keys.includes(key)));
 
-/** A bounded projection of native questions and flat MCP primitives into ordinary Form values. */
+type Option = NonNullable<Form["fields"][number]["options"]>[number];
+const option = (value: string, detail?: string): Option =>
+  detail?.trim() ? { value, detail } : { value };
+
+/** A bounded projection of a native request into an approval ask only the Actor's managers answer. */
 export function nativeForm(method: string, params: any, reference: string) {
   const name = (index: number) => `field_${reference}_${index}`;
-  const finish = (fields: Form["fields"], respond: (answers: Record<string, string>) => object) => {
-    const parsed = BUILTINS.form_create.request.shape.fields.safeParse(fields);
+  const finish = (
+    ask: { title: string; context?: string },
+    fields: Form["fields"],
+    respond: (answers: Record<string, string>) => object,
+  ) => {
+    const parsed = BUILTINS.form_create.request.safeParse({ ...ask, approval: true, fields });
     if (!parsed.success) {
       const issue = parsed.error.issues[0];
-      return unsupported(`Form.fields.${issue.path.join(".")}: ${issue.message}.`);
+      return unsupported(`Form.${issue.path.join(".")}: ${issue.message}.`);
     }
     return {
-      fields: parsed.data,
+      ask: parsed.data,
       response: (answers: Record<string, string>) => {
-        if (Object.keys(answers).some((key) => !parsed.data.some((field) => field.name === key)))
+        if (
+          Object.keys(answers).some(
+            (key) => !parsed.data.fields.some((field) => field.name === key),
+          )
+        )
           invalid();
         return respond(answers);
       },
@@ -109,13 +121,19 @@ export function nativeForm(method: string, params: any, reference: string) {
         label: [
           q.header,
           q.question,
-          ...(q.options ?? []).map((o) => `${o.label}: ${o.description}`),
+          ...(selection ? [] : (q.options ?? []).map((o) => `${o.label}: ${o.description}`)),
           q.isOther && q.options?.length ? "Enter a choice label or your own answer." : "",
         ]
           .filter(Boolean)
           .join("\n"),
         required: false,
-        ...(selection ? { options: selection.display } : {}),
+        ...(selection
+          ? {
+              options: selection.display.map((label, n) =>
+                option(label, q.options?.[n]?.description),
+              ),
+            }
+          : {}),
       });
       return {
         id: q.id,
@@ -127,7 +145,12 @@ export function nativeForm(method: string, params: any, reference: string) {
         },
       };
     });
-    return finish(fields, (answers) =>
+    const [only] = native.questions;
+    const title =
+      native.questions.length === 1
+        ? clip(only.question || only.header)
+        : `Answer ${native.questions.length} questions from Codex`;
+    return finish({ title: title || "Answer a question from Codex" }, fields, (answers) =>
       responseFor(method, native, "accept", {
         answers: Object.fromEntries(rows.map((row) => [row.id, { answers: row.value(answers) }])),
       }),
@@ -269,13 +292,11 @@ export function nativeForm(method: string, params: any, reference: string) {
       const field = {
         name: name(index + 1),
         required: false,
-        label: [params.message, property.title ?? key, property.description]
-          .filter(Boolean)
-          .join("\n"),
+        label: [property.title ?? key, property.description].filter(Boolean).join("\n"),
         ...(selection
-          ? { options: selection.display }
+          ? { options: selection.display.map((value) => option(value)) }
           : property.type === "boolean"
-            ? { options: ["Yes", "No"] }
+            ? { options: [option("Yes"), option("No")] }
             : {}),
       };
       return {
@@ -301,12 +322,20 @@ export function nativeForm(method: string, params: any, reference: string) {
       );
     }
     return finish(
+      {
+        title: clip(params.message) || "Answer an MCP server's request",
+        ...(clip(params.message) === params.message.trim() ? {} : { context: params.message }),
+      },
       [
         {
           name: name(0),
-          label: `${params.message}\nChoose Accept to submit values, Decline to refuse, or Cancel to stop.`,
+          label: "Decision",
           required: true,
-          options: ["Accept", "Decline", "Cancel"],
+          options: [
+            option("Accept", "Submit the values below"),
+            option("Decline", "Refuse the request"),
+            option("Cancel", "Stop without answering"),
+          ],
         },
         ...rows.map((row) => row.field),
       ],
@@ -337,12 +366,17 @@ export function nativeForm(method: string, params: any, reference: string) {
     );
   }
   return finish(
+    { title: requestTitle(method, params), context: requestReview(method, params) },
     [
       {
         name: name(0),
-        label: requestReview(method, params),
+        label: "Decision",
         required: true,
-        options: ["Approve", "Decline", "Cancel"],
+        options: [
+          option("Approve", "Allow it"),
+          option("Decline", "Refuse it; Codex continues the turn"),
+          option("Cancel", "Refuse it and stop the turn"),
+        ],
       },
     ],
     (answers) => {

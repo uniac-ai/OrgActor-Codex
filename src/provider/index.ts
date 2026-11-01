@@ -2,7 +2,7 @@ import { z } from "zod";
 import type { CodexAdapter } from "../codex/index.js";
 import { HubConnection } from "../hub/connection.js";
 import { Attach, ExecutionConfig, Fault, safeError } from "../management/schema.js";
-import { type Bootstrap, hash, inboxScope, type RuntimeStore, token } from "../runtime/index.js";
+import { type Bootstrap, hash, type RuntimeStore, token } from "../runtime/index.js";
 
 const Creation = Attach;
 export class CodexProvider {
@@ -169,6 +169,7 @@ export class CodexProvider {
         credential: params.credential ?? null,
         model: params.config.model ?? null,
         approvalAuthority: params.config.approvalAuthority,
+        ...(params.config.level === undefined ? {} : { level: params.config.level }),
         workspaceRoot: settings.workspaceRoot,
         hubUrl: hub.url,
         executionBinding: hash(JSON.stringify(settings)),
@@ -226,7 +227,6 @@ export class CodexProvider {
         bridgeToken: bootstrap.bridgeToken,
       });
       bootstrap.threadId = threadId;
-      bootstrap.inbox = { scope: inboxScope(bootstrap), after: 0, baseline: [] };
       this.store.data.journal[key] = { ...this.store.data.journal[key], state: "ready", threadId };
       this.store.save();
       this.launch(params.actorId);

@@ -199,9 +199,7 @@ test("operator controls use actor-scoped API routes and separate interrupt from 
   await page.keyboard.press("Escape");
   await page.getByRole("button", { name: bootstrap.actorId, exact: true }).click();
   await expect(
-    page.getByText(
-      /the designated Form when available; otherwise follow the native input recovery notice/,
-    ),
+    page.getByText(/its AgentOrg approval ask, as one of this Actor's managers, when one is bound/),
   ).toBeVisible();
   await screenshot(page, "mobile-native-form-fixture");
 });

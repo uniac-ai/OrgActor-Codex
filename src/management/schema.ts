@@ -1,9 +1,14 @@
 import { z } from "zod";
 
 export const Authority = z.enum(["desktop", "hub"]);
+/** The Hub's organization levels; each contains the one before. */
+export const Level = z.enum(["report", "team", "organization"]);
+export type Level = z.infer<typeof Level>;
 export const ExecutionConfig = z.strictObject({
   model: z.string().min(1).optional(),
   approvalAuthority: Authority.default("desktop"),
+  /** The level whose Hub interfaces the native session is offered; without one, all of them. */
+  level: Level.optional(),
 });
 export const Backend = z.discriminatedUnion("kind", [
   z.strictObject({

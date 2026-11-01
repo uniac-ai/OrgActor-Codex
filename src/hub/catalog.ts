@@ -1,6 +1,6 @@
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
-import { Fault } from "../management/schema.js";
+import { Fault, Level } from "../management/schema.js";
 
 const Metadata = z.strictObject({
   id: z.string().trim().min(1).max(64),
@@ -8,7 +8,17 @@ const Metadata = z.strictObject({
   interface: z.string().regex(/^[A-Za-z0-9_-]{1,64}$/),
   one_way: z.boolean(),
   long_running: z.boolean(),
+  level: Level.optional(),
 });
+
+/** Whether a Tool is presented at `level`, by the Hub's level tag; each level contains the one before. */
+export function presents(level: Level | undefined, tool: Tool): boolean {
+  const tag = Metadata.safeParse(tool._meta?.["agentorg/tool"]).data?.level;
+  return (
+    level === undefined ||
+    (tag !== undefined && Level.options.indexOf(tag) <= Level.options.indexOf(level))
+  );
+}
 
 /** Validated Tool/local-interface aliases; the MCP schemas pass through unchanged. */
 export function catalogOf(tools: Tool[]) {

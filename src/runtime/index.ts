@@ -43,7 +43,6 @@ export interface ApprovalBinding {
   threadId: string;
   turnId: string | null;
   method: string;
-  answerer: string;
   sessionId?: string;
   /** Null records an uncertain creation attempt; a missing field permits first issuance. */
   formId?: string | null;
@@ -65,15 +64,8 @@ export interface Bootstrap {
   bridgeToken: string;
   enabled: boolean;
   submissions: Submission[];
-  /** Continuation for this Hub/Actor/native binding and incoming message filter. */
-  inbox?: {
-    scope: string;
-    after: number;
-    /** Explicit host import baseline; these rows claim no native processing. */
-    baseline?: { messageID: string; recipientID: string; cursor: number }[];
-  };
-  /** Historical Hub cursor; never used for Workspace traversal. */
-  cursor?: number;
+  /** The Hub `attention` position this executor has delivered through; the Hub keeps none. */
+  delivered?: string;
   suspended?: number | "admission-rejected";
   approvals?: Record<string, ApprovalBinding>;
   startupFailure?: {
@@ -88,16 +80,6 @@ export interface Provision {
   state: "creating" | "ready" | "unknown" | "failed";
   threadId?: string;
 }
-export const inboxScope = (actor: Bootstrap): string =>
-  hash(
-    JSON.stringify([
-      actor.hubUrl,
-      actor.actorId,
-      actor.credential ?? null,
-      actor.threadId,
-      "incoming",
-    ]),
-  );
 export interface Runtime {
   revision: number;
   settings: Settings;
