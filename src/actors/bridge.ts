@@ -177,7 +177,7 @@ Your report is your public output: your status, your Work and your asks. Your pe
 - When an answer arrives, apply it, then update the Work it blocked; the ask is already resolved. When the person answers in this session, record it with form_close {formID, expectedRevision, status: "resolved", resolution}, quoting them; never close an approval on your own judgment.
 - When you finish, work_submit {ticketID, result, evidence?}. Your own Work completes on submit; Work someone else requested waits for their review.
 
-Answers, assigned Work, reviews and Messages reach you as input through the Hub. When this executor sends a Codex permission prompt to your managers as an approval ask, don't ask for it again.`;
+Answers, assigned Work, reviews and Messages reach you as input through the Hub. Under Hub approval ownership, this executor sends each Codex permission prompt to your managers as an approval ask itself; don't ask for it again.`;
 }
 
 /** The model presentation of the known credential-bearing Actor creation contract. */

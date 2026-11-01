@@ -714,10 +714,9 @@ export class ActorController extends EventEmitter {
           if (item.kind !== "message" || last.get(item.from.actorID) === item)
             await this.deliver(hub, item);
         if (this.stopped) return;
-        if (read.next !== since) {
-          this.bootstrap.delivered = read.next;
-          this.store.save();
-        }
+        // A read of other records' changes only moves the position; re-reading it costs nothing.
+        this.bootstrap.delivered = read.next;
+        if (read.items.length) this.store.save();
       } catch {
         if (!this.stopped)
           this.lastError = "The Actor inbox is unavailable; reconnect will resume delivery.";
