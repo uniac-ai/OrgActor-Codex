@@ -1,7 +1,7 @@
 FROM node:24.22.1-bookworm-slim AS build
 WORKDIR /app
 COPY package.json package-lock.json ./
-COPY test/fixtures/agentorg-cli-79508a61.tgz ./test/fixtures/agentorg-cli-79508a61.tgz
+COPY test/fixtures/agentorg-cli-1509561.tgz ./test/fixtures/agentorg-cli-1509561.tgz
 RUN npm ci --ignore-scripts
 COPY tsconfig.json ./
 COPY src ./src
@@ -11,7 +11,7 @@ RUN npm run build
 FROM node:24.22.1-bookworm-slim AS dependencies
 WORKDIR /app
 COPY package.json package-lock.json ./
-COPY test/fixtures/agentorg-cli-79508a61.tgz ./test/fixtures/agentorg-cli-79508a61.tgz
+COPY test/fixtures/agentorg-cli-1509561.tgz ./test/fixtures/agentorg-cli-1509561.tgz
 RUN npm ci --omit=dev --ignore-scripts
 
 FROM node:24.22.1-bookworm-slim

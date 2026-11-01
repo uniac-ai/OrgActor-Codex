@@ -11,7 +11,7 @@ import { type WebSocket, WebSocketServer } from "ws";
 import type { ActorController } from "../src/actors/controller.js";
 import { RuntimeStore } from "../src/runtime/index.js";
 import { startServer } from "../src/server/index.js";
-import { message } from "./workspace-fixtures.js";
+import { at, attention, message } from "./workspace-fixtures.js";
 
 const tool = (id: string, name: string, alias: string) => ({
   name: alias,
@@ -28,7 +28,8 @@ const tool = (id: string, name: string, alias: string) => ({
 });
 const tools = [
   tool("hub:team", "team", "team_alias"),
-  tool("hub:messages", "message_list", "inbox_alias"),
+  tool("hub:attention", "attention", "attention_alias"),
+  tool("hub:messages", "message_list", "conversation_alias"),
 ];
 async function until(description: string, read: () => boolean) {
   for (let i = 0; i < 500; i++) {
@@ -115,31 +116,35 @@ for (const mode of ["fresh", "unknown", "offline", "rejected", "lost"])
             content: [{ type: "text", text: JSON.stringify(value) }],
             structuredContent: value,
           });
-        } else if (m.method === "tools/call" && m.params.name === "inbox_alias") {
-          const after = m.params.arguments.after;
-          assert.deepEqual(m.params.arguments, { direction: "incoming", after, limit: 100 });
-          const deliver = () => {
-            state.inboxDeliveries++;
-            respond({
-              content: [],
-              structuredContent: {
-                items:
-                  after === 0
-                    ? [
-                        {
-                          ...message(1, "fresh-actor"),
-                          messageID: "inbox-message",
-                          text: "Mock first input",
-                          senderID: "root",
-                        },
-                      ]
-                    : [],
-                after: 1,
+        } else if (m.method === "tools/call" && m.params.name === "attention_alias") {
+          const reply = (value: object) => respond({ content: [], structuredContent: value });
+          const { since } = m.params.arguments;
+          // The position starts when the Actor connects; later reads wait for news.
+          if (since === undefined) reply(attention("5"));
+          else if (since === "5")
+            deliverInbox = () => {
+              state.inboxDeliveries++;
+              reply(attention("6", [{ kind: "message", recordID: "inbox-message", from: "root" }]));
+            };
+        } else if (m.method === "tools/call" && m.params.name === "conversation_alias") {
+          assert.deepEqual(m.params.arguments, {
+            counterpartyID: "root",
+            before: "latest",
+            limit: 20,
+          });
+          const value = {
+            items: [
+              {
+                ...message(1, "fresh-actor", "root"),
+                messageID: "inbox-message",
+                text: "Mock first input",
               },
-            });
+            ],
+            next: null,
+            older: null,
+            actors: {},
           };
-          if (!state.inboxDeliveries) deliverInbox = deliver;
-          else deliver();
+          respond({ content: [], structuredContent: value });
         } else if (m.id === "create") state.providerReply = m;
       }),
     );
@@ -191,7 +196,7 @@ for (const mode of ["fresh", "unknown", "offline", "rejected", "lost"])
             )
             .then(() => mcp.listTools())
             .then(async (list) => {
-              assert.equal(list.tools.length, 2);
+              assert.equal(list.tools.length, 3);
               assert.equal(startReplied, false);
               assert.equal(preparedActor.hubReady, true);
               assert.equal(preparedActor.bootstrap.threadId, "");
@@ -249,7 +254,7 @@ for (const mode of ["fresh", "unknown", "offline", "rejected", "lost"])
         else if (m.method === "account/rateLimits/read") respond({ ordinaryUsageAllowed: true });
         else if (m.method === "turn/start") {
           assert.equal(socket, creatingSocket);
-          assert.equal(m.params.clientUserMessageId, "message:inbox-message");
+          assert.equal(m.params.clientUserMessageId, `message:inbox-message:${at}`);
           assert.match(m.params.input[0].text, /Origin: Hub Actor root/);
           assert.equal(preparedActor.snapshot().observation, "available");
           state.materialized = true;
@@ -454,16 +459,17 @@ for (const mode of ["fresh", "unknown", "offline", "rejected", "lost"])
     await until("Actor reads its own Hub inbox", () => !!deliverInbox);
     deliverInbox?.();
     await until(
-      "Locally chosen native turn settles and its private cursor persists",
+      "Locally chosen native turn settles and its private position persists",
       () =>
         runtime.store.data.actors["fresh-actor"].submissions[0]?.state === "done" &&
-        runtime.store.data.actors["fresh-actor"].inbox?.after === 1,
+        runtime.store.data.actors["fresh-actor"].delivered === "6",
     );
     const input = runtime.store.data.actors["fresh-actor"].submissions[0];
     assert.equal(input.result?.status, "completed");
     assert.equal(input.result?.output, "MOCK_COMPLETE");
     assert.equal(input.from, "root");
-    assert.equal(input.id, "message:inbox-message");
+    assert.equal(input.id, `message:inbox-message:${at}`);
+    assert.match(input.text, /root \(inbox-message\): Mock first input/);
     assert.equal(state.calls.filter((m) => m === "turn/start").length, 1);
     assert.equal(runtime.store.data.actors["fresh-actor"].submissions.length, 1);
     assert.deepEqual(state.causes, [undefined]);

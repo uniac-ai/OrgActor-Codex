@@ -423,3 +423,85 @@ test("multibyte unauthorized Bearer input returns 401 and the assembled server r
   assert.equal(status, 401);
   assert.equal((await fetch(`${module.url}/api/state`)).status, 200);
 });
+
+test("the native session is offered its chosen level's Hub interfaces and the report guidance", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "orgactor-level-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const module = await startServer({ root: dir, port: 0 });
+  t.after(() => module.close());
+  const bootstrap = {
+    actorId: "actor",
+    hubUrl: "http://unused.invalid",
+    config: { approvalAuthority: "desktop" as const, level: "report" as const },
+    threadId: "thread",
+    bridgeToken: "OWNED_LEVEL_CAPABILITY",
+    enabled: true,
+    submissions: [],
+  };
+  module.store.data.actors.actor = bootstrap;
+  const adapter = {
+    read: async () => ({ thread: { id: "thread", sessionId: "session", turns: [] } }),
+  };
+  const actor = new ActorController(bootstrap, module.store, async () => adapter as any);
+  actor.adapter = adapter as any;
+  await actor.reconcile();
+  const tool = (id: string, name: string, level?: string): Tool => ({
+    name,
+    inputSchema: { type: "object" },
+    _meta: {
+      "agentorg/tool": {
+        id,
+        name: id.slice(4),
+        interface: name,
+        one_way: false,
+        long_running: false,
+        ...(level ? { level } : {}),
+      },
+    },
+  });
+  const tools = [
+    tool("hub:status", "status_set", "report"),
+    tool("hub:messages", "message_send", "team"),
+    tool("hub:actors", "actor_close", "organization"),
+    tool("hub:legacy", "untagged"),
+  ];
+  let dispatches = 0;
+  actor.hubReady = true;
+  actor.hub = {
+    connection: { connected: true },
+    tools,
+    refreshTools: async () => tools,
+    close: async () => {},
+    call: async () => {
+      dispatches++;
+      return { content: [] };
+    },
+  } as any;
+  module.actors.actors.set("actor", actor);
+  const client = new Client({ name: "native-level-test", version: "1" });
+  t.after(() => client.close());
+  await client.connect(
+    new StreamableHTTPClientTransport(new URL(`${module.url}/mcp`), {
+      requestInit: { headers: { Authorization: "Bearer OWNED_LEVEL_CAPABILITY" } },
+    }),
+  );
+  assert.match(client.getInstructions() ?? "", /You fill AgentOrg Actor actor\./);
+  assert.match(client.getInstructions() ?? "", /One Work per workstream: work_create/);
+  assert.match(client.getInstructions() ?? "", /recommended value/);
+  assert.deepEqual(
+    (await client.listTools()).tools.map((t) => t.name),
+    ["status_set"],
+  );
+  await assert.rejects(
+    client.callTool({ name: "message_send", arguments: {}, _meta: { threadId: "thread" } }),
+    /no such interface/,
+  );
+  bootstrap.config = { approvalAuthority: "desktop", level: "team" } as any;
+  assert.deepEqual(
+    (await client.listTools()).tools.map((t) => t.name),
+    ["status_set", "message_send"],
+  );
+  delete (bootstrap.config as { level?: string }).level;
+  assert.equal((await client.listTools()).tools.length, 4);
+  assert.equal(dispatches, 0);
+});

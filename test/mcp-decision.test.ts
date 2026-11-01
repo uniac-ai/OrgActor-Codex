@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
-import { BUILTINS, Form } from "@agentorg/cli/contract";
+import { Form } from "@agentorg/cli/contract";
 import { AjvJsonSchemaValidator } from "@modelcontextprotocol/sdk/validation/ajv-provider.js";
 import { deferred, nativeFormFixture } from "./native-form-fixture.js";
 
@@ -57,7 +57,12 @@ for (const choice of ["Accept", "Decline", "Cancel"])
       const form = Form.parse(read.value),
         decision = form.fields[0],
         data = form.fields.slice(1);
-      assert.deepEqual(decision.options, ["Accept", "Decline", "Cancel"]);
+      assert.equal(form.approval, true);
+      assert.equal(form.title, "Choose your settings.");
+      assert.deepEqual(
+        decision.options?.map((option) => option.value),
+        ["Accept", "Decline", "Cancel"],
+      );
       assert.equal(decision.required, true);
       assert.equal(data.length, 3);
       assert.ok(data.every((field) => !field.required));
@@ -89,12 +94,12 @@ for (const choice of ["Accept", "Decline", "Cancel"])
       assert.deepEqual(f.answers, [{ id: "fixture-request", response }]);
       const binding = Object.values(f.bootstrap.approvals ?? {})[0];
       assert.deepEqual(binding.answerAttempt?.response, response);
-      const stillOpen = await f.root.call("form_get", { formID });
-      assert.ok(stillOpen.state === "done");
-      assert.equal(Form.parse(stillOpen.value).status, "open");
+      const resolved = await f.root.call("form_get", { formID });
+      assert.ok(resolved.state === "done");
+      assert.equal(Form.parse(resolved.value).status, "resolved");
     });
 
-test("public Form validation keeps invalid MCP choices awaiting the Human", {
+test("public ask validation keeps invalid MCP choices open for the manager", {
   timeout: 10_000,
 }, async (t) => {
   const release = deferred<void>(),
@@ -125,17 +130,9 @@ test("public Form validation keeps invalid MCP choices awaiting the Human", {
       answers,
     });
     assert.notEqual(rejected.state, "done");
-    const awaiting = await f.root.call("form_list", {
-      requesterID: f.child.actor.id,
-      awaitingActorID: f.hub.rootId,
-    });
-    assert.ok(awaiting.state === "done");
-    assert.deepEqual(
-      BUILTINS.form_list.response.parse(awaiting.value).items.map((item) => item.formID),
-      [formID],
-    );
     const unchanged = await f.root.call("form_get", { formID });
     assert.ok(unchanged.state === "done");
+    assert.equal(Form.parse(unchanged.value).status, "open");
     assert.equal(Object.hasOwn(Form.parse(unchanged.value).responses, f.hub.rootId), false);
     assert.equal(f.answers.length, 0);
     assert.equal(
@@ -156,7 +153,7 @@ test("public Form validation keeps invalid MCP choices awaiting the Human", {
   ]);
 });
 
-test("requester Form cancellation is not an MCP cancel response", {
+test("requester ask cancellation is not an MCP cancel response", {
   timeout: 10_000,
 }, async (t) => {
   const release = deferred<void>(),

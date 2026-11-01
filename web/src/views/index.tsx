@@ -378,14 +378,12 @@ function ActorsView(p: ActorsFeature) {
                 >
                   <SelectTrigger aria-label="Approval owner">
                     <SelectValue>
-                      {actor.approvalAuthority === "desktop"
-                        ? "Codex Desktop"
-                        : "Designated Hub manager"}
+                      {actor.approvalAuthority === "desktop" ? "Codex Desktop" : "Hub managers"}
                     </SelectValue>
                   </SelectTrigger>
                   <SelectContent>
                     <SelectItem value="desktop">Codex Desktop</SelectItem>
-                    <SelectItem value="hub">Designated Hub manager</SelectItem>
+                    <SelectItem value="hub">Hub managers</SelectItem>
                   </SelectContent>
                 </Select>
               </Field>
@@ -407,7 +405,7 @@ function ActorsView(p: ActorsFeature) {
                     Answer in{" "}
                     {actor.approvalAuthority === "desktop"
                       ? "Codex Desktop"
-                      : "the designated Form when available; otherwise follow the native input recovery notice"}
+                      : "its AgentOrg approval ask, as one of this Actor's managers, when one is bound; otherwise follow the native input recovery notice"}
                     .
                   </p>
                 </div>

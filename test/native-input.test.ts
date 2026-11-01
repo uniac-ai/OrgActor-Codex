@@ -69,7 +69,10 @@ const cases: {
     ]),
     fields: 2,
     answer: (f) => {
-      assert.deepEqual(f.fields[0].options, ["Small", "Large"]);
+      assert.deepEqual(f.fields[0].options, [
+        { value: "Small", detail: "For a small team" },
+        { value: "Large", detail: "For a large team" },
+      ]);
       assert.equal(f.fields[1].options, undefined);
       return { [f.fields[0].name]: "Small", [f.fields[1].name]: "Fits our team" };
     },
@@ -213,11 +216,16 @@ for (const c of cases)
     assert.ok(read.state === "done");
     const form = Form.parse(read.value);
     assert.equal(form.workID, undefined);
+    assert.equal(form.approval, true);
+    assert.ok(form.title.length > 0 && form.title.length <= 120);
     const isMcp = c.method === "mcpServer/elicitation/request";
     const dataForm = isMcp ? { ...form, fields: form.fields.slice(1) } : form;
     assert.equal(dataForm.fields.length, c.fields);
     if (isMcp) {
-      assert.deepEqual(form.fields[0].options, ["Accept", "Decline", "Cancel"]);
+      assert.deepEqual(
+        form.fields[0].options?.map((option) => option.value),
+        ["Accept", "Decline", "Cancel"],
+      );
       assert.equal(form.fields[0].required, true);
       assert.ok(dataForm.fields.every((field) => !field.required));
     }
@@ -248,15 +256,9 @@ for (const c of cases)
       ).valid,
       true,
     );
-    const stillOpen = await f.root.call("form_get", { formID });
-    assert.ok(stillOpen.state === "done");
-    assert.equal(Form.parse(stillOpen.value).status, "open");
-    const awaiting = await f.root.call("form_list", {
-      requesterID: f.child.actor.id,
-      awaitingActorID: f.hub.rootId,
-    });
-    assert.ok(awaiting.state === "done");
-    assert.equal(BUILTINS.form_list.response.parse(awaiting.value).items.length, 0);
+    const resolved = await f.root.call("form_get", { formID });
+    assert.ok(resolved.state === "done");
+    assert.equal(Form.parse(resolved.value).status, "resolved");
   });
 
 const unsupportedCases: { name: string; method: string; params: any; diagnostic: RegExp }[] = [
@@ -444,7 +446,7 @@ for (const c of unsupportedCases)
     assert.doesNotMatch(f.actor.lastError ?? "", /answer.*Form|JSON/);
     await assert.rejects(
       f.actor.checkRequest("fixture-request"),
-      /no bound Form.*native input owner/,
+      /no bound ask.*native input owner/,
     );
     const forms = await f.root.call("form_list", { requesterID: f.child.actor.id });
     assert.ok(forms.state === "done");

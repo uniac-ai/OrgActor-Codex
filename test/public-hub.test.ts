@@ -76,7 +76,7 @@ for (const delayed of ["item", "turn-and-item"])
               }),
             );
             const list = await mcp.listTools();
-            assert.equal(list.tools.length, 23);
+            assert.equal(list.tools.length, 30);
             assert.equal(
               list.tools.find((tool) => tool.name === "team")?.description,
               state.teamDescription,
@@ -84,7 +84,7 @@ for (const delayed of ["item", "turn-and-item"])
             for (const tool of list.tools)
               assert.deepEqual(
                 Object.keys(tool._meta?.["agentorg/tool"] as object).sort(),
-                ["id", "name", "interface", "one_way", "long_running"].sort(),
+                ["id", "name", "interface", "one_way", "long_running", "level"].sort(),
               );
             assert.equal(actor.threadId, "");
             await assert.rejects(
@@ -210,7 +210,7 @@ for (const delayed of ["item", "turn-and-item"])
     await runtime.provider.setEnabled(true);
     await until(() => runtime.provider.snapshot().connected);
     const publicTools = await root.available();
-    assert.equal(publicTools.length, 9);
+    assert.equal(publicTools.length, 11);
     state.teamDescription = publicTools
       .find((tool) => tool.id === "hub:team")
       ?.interfaces.find((offer) => offer.interface.name === "team")?.interface.description;
@@ -236,7 +236,7 @@ for (const delayed of ["item", "turn-and-item"])
       assert.deepEqual(Object.keys(refused).sort(), ["state", "code", "message"].sort());
     }
     assert.equal(state.nativeStarts, 0);
-    assert.equal((await root.available()).flatMap((tool) => tool.interfaces).length, 23);
+    assert.equal((await root.available()).flatMap((tool) => tool.interfaces).length, 30);
     for (const name of [
       "messages",
       "message_read",
@@ -258,7 +258,8 @@ for (const delayed of ["item", "turn-and-item"])
     await until(() => !!state.failure || actor.bootstrap.submissions[0]?.state === "done");
     assert.equal(state.failure, undefined);
     const input = actor.bootstrap.submissions[0];
-    assert.equal(input.id, `message:${sent.messageID}`);
+    assert.match(input.id, new RegExp(`^message:${sent.messageID}:`));
+    assert.match(input.text, /\(.+\): Owned inbox decision\nReply with message_send/);
     assert.equal(input.from, hub.rootId);
     assert.equal(input.cause, null);
     assert.equal(input.result?.output, "OWNED_FIXTURE_COMPLETE");
@@ -286,36 +287,6 @@ for (const delayed of ["item", "turn-and-item"])
       credential: outsiderValue.credential,
     });
     t.after(() => outsider.close());
-    const emptyCreated = await outsider.call("form_create", {
-      respondentIDs: [hub.rootId],
-      fields: [{ name: "optional", label: "Optional", required: false }],
-    });
-    assert.ok(emptyCreated.state === "done");
-    const emptyForm = BUILTINS.form_create.response.parse(emptyCreated.value);
-    const awaitingBefore = await root.call("form_list", { awaitingActorID: hub.rootId });
-    assert.ok(awaitingBefore.state === "done");
-    assert.ok(
-      BUILTINS.form_list.response
-        .parse(awaitingBefore.value)
-        .items.some((f) => f.formID === emptyForm.formID),
-    );
-    const emptyAnswered = await root.call("form_respond", {
-      formID: emptyForm.formID,
-      expectedRevision: emptyForm.revision,
-      answers: {},
-    });
-    assert.ok(emptyAnswered.state === "done");
-    const emptyResponse = BUILTINS.form_respond.response.parse(emptyAnswered.value);
-    assert.ok(Object.hasOwn(emptyResponse.responses, hub.rootId));
-    assert.deepEqual(emptyResponse.responses[hub.rootId], {});
-    const awaitingAfter = await root.call("form_list", { awaitingActorID: hub.rootId });
-    assert.ok(awaitingAfter.state === "done");
-    assert.equal(
-      BUILTINS.form_list.response
-        .parse(awaitingAfter.value)
-        .items.some((f) => f.formID === emptyForm.formID),
-      false,
-    );
 
     const configured = await fetch(`${runtime.url}/api/actors/${value.actor.id}`, {
       method: "PATCH",
@@ -368,7 +339,9 @@ for (const delayed of ["item", "turn-and-item"])
     const nativeForm = BUILTINS.form_get.response.parse(shared.value);
     assert.equal(nativeForm.workID, undefined);
     assert.equal(nativeForm.requesterID, actor.bootstrap.actorId);
-    assert.deepEqual(nativeForm.respondentIDs, [hub.rootId]);
+    assert.equal(nativeForm.approval, true);
+    assert.equal(nativeForm.title, "Proceed?");
+    assert.deepEqual(nativeForm.fields[0].options, [{ value: "yes", detail: "Proceed" }]);
     assert.equal(nativeForm.fields.length, 1);
     assert.ok(
       nativeForm.fields.every(
@@ -411,7 +384,8 @@ for (const delayed of ["item", "turn-and-item"])
     assert.deepEqual(state.answers, [{ answers: { "native-choice-id": { answers: ["yes"] } } }]);
     assert.ok(formReads.length > 0 && formReads.every((id) => id === nativeForm.formID));
     assert.ok(binding.answerAttempt);
-    const stillOpen = await root.call("form_get", { formID: nativeForm.formID });
-    assert.ok(stillOpen.state === "done");
-    assert.equal(BUILTINS.form_get.response.parse(stillOpen.value).status, "open");
+    const resolved = await root.call("form_get", { formID: nativeForm.formID });
+    assert.ok(resolved.state === "done");
+    assert.equal(BUILTINS.form_get.response.parse(resolved.value).status, "resolved");
+    assert.equal(actor.bootstrap.submissions.length, 1);
   });

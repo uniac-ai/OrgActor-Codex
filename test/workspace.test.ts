@@ -3,9 +3,11 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { Work } from "@agentorg/cli/contract";
 import { ActorController } from "../src/actors/controller.js";
-import { type Bootstrap, inboxScope, RuntimeStore } from "../src/runtime/index.js";
-import { form, message, team } from "./workspace-fixtures.js";
+import { Fault } from "../src/management/schema.js";
+import { type Bootstrap, RuntimeStore } from "../src/runtime/index.js";
+import { at, attention, form, message } from "./workspace-fixtures.js";
 
 const settle = async () => {
   for (let i = 0; i < 12; i++) await new Promise(setImmediate);
@@ -23,7 +25,7 @@ function fixture(t: any) {
     config: { approvalAuthority: "hub" },
     submissions: [],
   };
-  bootstrap.inbox = { scope: inboxScope(bootstrap), after: 0, baseline: [] };
+  bootstrap.delivered = "0";
   store.data.actors.actor = bootstrap;
   const answers: any[] = [];
   const adapter = {
@@ -40,6 +42,12 @@ function fixture(t: any) {
       answers.push({ id, response });
     },
     reject: () => {},
+    steers: [] as string[],
+    steer: async (_thread: string, turnId: string, _text: string, id: string) => {
+      adapter.steers.push(id);
+      if (id.includes(":refused:")) throw new Fault("NATIVE_REJECTED", "Refused", 422);
+      return turnId;
+    },
   };
   const actor = new ActorController(bootstrap, store, async () => adapter as any);
   actor.hub = {
@@ -70,30 +78,29 @@ function fixture(t: any) {
   return { root, store, bootstrap, actor, adapter, event, ready, request, answers };
 }
 
-test("incoming pages persist receipts before cursor; partial save failure/restart neither loses nor duplicates input", async (t) => {
+const ok = (structuredContent: object) => ({ structuredContent });
+
+test("attention receipts persist before the position; a failed save and restart neither lose nor duplicate input", async (t) => {
   const f = fixture(t);
-  f.bootstrap.cursor = 999999;
-  const all = Array.from({ length: 251 }, (_, n) => message(n + 1));
-  const seen: number[] = [];
-  const call = async (name: string, args: any) => {
-    assert.equal(name, "message_list");
-    assert.equal(args.direction, "incoming");
-    assert.equal(args.limit, 100);
-    seen.push(args.after);
-    const items = all.filter((m) => m.cursor > args.after).slice(0, args.limit);
-    if (!items.length) (f.actor.hub as any).connection.connected = false;
-    return { structuredContent: { items, after: items.at(-1)?.cursor ?? args.after } };
+  const items = ["w1", "w2", "w3"].map((recordID) => ({ kind: "assigned", recordID }));
+  const seen: unknown[] = [];
+  const call = async (name: string, args: any, timeout?: number) => {
+    assert.equal(name, "attention");
+    assert.equal(timeout, 630_000);
+    seen.push(args);
+    if (args.since === "3") (f.actor.hub as any).connection.connected = false;
+    return ok(args.since === "0" ? attention("3", items) : attention("3"));
   };
   (f.actor.hub as any).call = call;
   const save = f.store.save.bind(f.store);
   f.store.save = () => {
-    if (f.bootstrap.submissions.length === 101) throw new Error("owned persistence fault");
+    if (f.bootstrap.submissions.length === 2) throw new Error("owned persistence fault");
     save();
   };
   await (f.actor as any).watchInbox();
   const reopened = new RuntimeStore(f.root);
-  assert.equal(reopened.data.actors.actor.inbox?.after, 100);
-  assert.equal(reopened.data.actors.actor.submissions.length, 100);
+  assert.equal(reopened.data.actors.actor.delivered, "0");
+  assert.equal(reopened.data.actors.actor.submissions.length, 1);
   const actor = new ActorController(
     reopened.data.actors.actor,
     reopened,
@@ -102,109 +109,187 @@ test("incoming pages persist receipts before cursor; partial save failure/restar
   actor.hub = f.actor.hub;
   t.after(() => actor.close());
   await (actor as any).watchInbox();
-  assert.deepEqual(seen, [0, 100, 100, 200, 251]);
-  assert.equal(reopened.data.actors.actor.submissions.length, 251);
-  assert.equal(new Set(reopened.data.actors.actor.submissions.map((s) => s.id)).size, 251);
-  assert.equal(reopened.data.actors.actor.cursor, 999999);
-  assert.equal(reopened.data.actors.actor.inbox?.after, 251);
+  assert.deepEqual(seen, [
+    { since: "0", wait: 600 },
+    { since: "0", wait: 600 },
+    { since: "3", wait: 600 },
+  ]);
+  const inputs = reopened.data.actors.actor.submissions;
+  assert.deepEqual(
+    inputs.map((s) => s.id),
+    items.map((i) => `assigned:${i.recordID}:${at}`),
+  );
+  assert.ok(inputs.every((s) => s.state === "queued" && s.from === "manager"));
+  assert.match(inputs[0].text, /manager assigned you Work "w1" \(w1\)/);
+  assert.equal(reopened.data.actors.actor.delivered, "3");
 });
 
-test("explicit historical baseline skips only exact imported rows without manufacturing receipts or completion", async (t) => {
+test("a missing position starts at the Hub's current one, and one the Hub never issued restarts from now", async (t) => {
   const f = fixture(t);
-  const first = message(1),
-    historical = message(3),
-    fresh = message(2);
-  f.bootstrap.inbox = {
-    scope: inboxScope(f.bootstrap),
-    after: 0,
-    baseline: [first, historical].map(({ messageID, recipientID, cursor }) => ({
-      messageID,
-      recipientID,
-      cursor,
-    })),
+  delete f.bootstrap.delivered;
+  const seen: unknown[] = [];
+  (f.actor.hub as any).call = async (name: string, args: any) => {
+    assert.equal(name, "attention");
+    seen.push(args);
+    if (args.since === "7")
+      return {
+        isError: true,
+        content: [{ type: "text", text: "invalid: since: beyond this Hub's position" }],
+      };
+    if (args.since === "9") (f.actor.hub as any).connection.connected = false;
+    return ok(attention(seen.length === 1 ? "7" : "9"));
   };
-  (f.actor.hub as any).call = async (_: string, args: any) => {
-    if (args.after) (f.actor.hub as any).connection.connected = false;
-    return { structuredContent: { items: args.after ? [] : [first, fresh, historical], after: 3 } };
+  await (f.actor as any).watchInbox();
+  assert.deepEqual(seen, [{}, { since: "7", wait: 600 }, {}, { since: "9", wait: 600 }]);
+  assert.equal(f.bootstrap.delivered, "9");
+  assert.equal(f.bootstrap.submissions.length, 0);
+});
+
+test("input steers a running turn, and starts the next turn when the turn waits on a native request or refuses", async (t) => {
+  const f = fixture(t);
+  f.bootstrap.config.approvalAuthority = "desktop";
+  await f.ready();
+  const deliver = (recordID: string) =>
+    (f.actor as any).deliver(
+      f.actor.hub,
+      attention("1", [{ kind: "assigned", recordID }]).items[0],
+    );
+  await deliver("steered");
+  await deliver("refused");
+  f.request();
+  await deliver("waiting");
+  await deliver("steered");
+  assert.deepEqual(f.adapter.steers, [`assigned:steered:${at}`, `assigned:refused:${at}`]);
+  assert.deepEqual(
+    f.bootstrap.submissions.map((s) => [s.id, s.kind ?? "run", s.state]),
+    [
+      [`assigned:steered:${at}`, "steer", "running"],
+      [`assigned:refused:${at}`, "steer", "done"],
+      [`assigned:refused:${at}:next`, "run", "queued"],
+      [`assigned:waiting:${at}`, "run", "queued"],
+    ],
+  );
+});
+
+test("an answer carries its ask and Work; the answer to a native request's approval ask is not input", async (t) => {
+  const f = fixture(t);
+  const fields = [{ name: "field_native_0", label: "Decision", required: true }];
+  f.bootstrap.approvals = {
+    native: {
+      requestId: "r",
+      threadId: "thread",
+      turnId: "turn",
+      method: "m",
+      fields,
+      state: "waiting",
+    },
+  };
+  const answered = { answers: { approach: "freeze" }, note: "Go", at };
+  (f.actor.hub as any).call = async (name: string, args: any) => {
+    if (name === "work_get")
+      return ok(
+        Work.parse({
+          ticketID: "w1",
+          requesterID: "actor",
+          ownerID: "actor",
+          title: "Switch to v2",
+          status: "active",
+          links: [],
+          createdAt: at,
+          revision: 1,
+          updatedAt: at,
+        }),
+      );
+    assert.equal(name, "form_get");
+    return ok(
+      args.formID === "own"
+        ? form({ title: "Grant?", fields }, { formID: "own", responses: { manager: answered } })
+        : form(
+            { title: "Freeze?", fields: [{ name: "approach", label: "Approach", required: true }] },
+            {
+              formID: "other",
+              approval: false,
+              status: "resolved",
+              workID: "w1",
+              responses: { manager: answered },
+            },
+          ),
+    );
+  };
+  for (const recordID of ["own", "other"])
+    await (f.actor as any).deliver(
+      f.actor.hub,
+      attention("1", [{ kind: "answer", recordID, title: "Freeze?" }]).items[0],
+    );
+  assert.deepEqual(
+    f.bootstrap.submissions.map((s) => s.id),
+    [`answer:other:${at}`],
+  );
+  assert.equal(
+    f.bootstrap.submissions[0].text,
+    'manager answered your ask "Freeze?" (other): approach: freeze. Note: Go Apply it, then update "Switch to v2" (w1). The ask records the answer; it is resolved.',
+  );
+});
+
+test("a message carries its conversation from the Actor's own last message, once per sender", async (t) => {
+  const f = fixture(t);
+  const conversation = [message(1), message(2, "manager", "actor"), message(3), message(4)];
+  (f.actor.hub as any).call = async (name: string, args: any) => {
+    if (name === "message_list") {
+      assert.deepEqual(args, { counterpartyID: "manager", before: "latest", limit: 20 });
+      return ok({ items: conversation, next: null, older: null, actors: {} });
+    }
+    assert.equal(name, "attention");
+    if (args.since === "2") (f.actor.hub as any).connection.connected = false;
+    return ok(
+      args.since === "0"
+        ? attention("2", [
+            { kind: "message", recordID: "m3" },
+            { kind: "message", recordID: "m4" },
+          ])
+        : attention("2"),
+    );
   };
   await (f.actor as any).watchInbox();
   assert.deepEqual(
-    f.bootstrap.submissions.map((s) => ({ id: s.id, state: s.state, result: s.result })),
-    [{ id: "message:m2", state: "queued", result: undefined }],
+    f.bootstrap.submissions.map((s) => s.id),
+    [`message:m4:${at}`],
   );
-  assert.equal(f.bootstrap.inbox.after, 3);
-  assert.equal(f.bootstrap.inbox.baseline?.length, 2);
+  assert.equal(
+    f.bootstrap.submissions[0].text,
+    "manager sent you a message. The conversation from your last message in it:\nyou (m2): task 2\nmanager (m3): task 3\nmanager (m4): task 4\nReply with message_send {recipientID: manager}.",
+  );
 });
 
-for (const change of ["hubUrl", "actorId", "credential", "threadId"] as const)
-  test(`wrong ${change} scope holds inbox migration without querying or dispatching`, async (t) => {
-    const f = fixture(t);
-    f.bootstrap.inbox = { scope: inboxScope(f.bootstrap), after: 50, baseline: [] };
-    f.bootstrap[change] += "-changed";
-    (f.actor.hub as any).call = async () => assert.fail("No new traversal before scoped migration");
-    await (f.actor as any).watchInbox();
-    assert.equal(f.bootstrap.inbox.after, 50);
-    assert.match(f.actor.lastError ?? "", /authoritative historical Message baseline/);
-  });
-
-test("same-ID receipt dedup preserves unknown input; baseline mismatch cannot move the cursor", async (t) => {
-  const f = fixture(t),
-    m = message(1);
-  f.actor.enqueue("message:m1", m.text, m.senderID).state = "unknown";
-  f.store.save();
-  f.bootstrap.inbox = {
-    scope: inboxScope(f.bootstrap),
-    after: 0,
-    baseline: [{ messageID: "m2", recipientID: "foreign", cursor: 2 }],
-  };
-  (f.actor.hub as any).call = async () => ({
-    structuredContent: { items: [m, message(2)], after: 2 },
-  });
-  await (f.actor as any).watchInbox();
-  assert.equal(f.bootstrap.inbox.after, 0);
-  assert.equal(f.bootstrap.submissions.length, 1);
-  assert.equal(f.bootstrap.submissions[0].state, "unknown");
-});
-
-for (const bad of [
-  undefined,
-  [{ messageID: "m1", recipientID: "actor", cursor: 0 }],
-  [{ messageID: "m1", recipientID: "other", cursor: 1 }],
-])
-  test("incomplete or invalid host baseline holds inbox migration", async (t) => {
-    const f = fixture(t);
-    f.bootstrap.inbox = { scope: inboxScope(f.bootstrap), after: 0, baseline: bad };
-    (f.actor.hub as any).call = async () => assert.fail("Invalid baseline cannot start delivery");
-    await (f.actor as any).watchInbox();
-    assert.equal(f.bootstrap.submissions.length, 0);
-    assert.match(f.actor.lastError ?? "", /authoritative historical Message baseline/);
-  });
-
-test("receipt-based repeated Message identity retains an unknown outcome without a new dispatch", async (t) => {
-  const f = fixture(t),
-    m = message(1);
-  f.actor.enqueue("message:m1", m.text, m.senderID).state = "unknown";
+test("a repeated item keeps its unknown outcome without a new dispatch", async (t) => {
+  const f = fixture(t);
+  f.actor.enqueue(`assigned:w1:${at}`, "earlier", "manager").state = "unknown";
   f.store.save();
   (f.actor.hub as any).call = async (_: string, args: any) => {
-    if (args.after) (f.actor.hub as any).connection.connected = false;
-    return { structuredContent: { items: args.after ? [] : [m], after: 1 } };
+    if (args.since === "1") (f.actor.hub as any).connection.connected = false;
+    return ok(attention("1", args.since === "0" ? [{ kind: "assigned", recordID: "w1" }] : []));
   };
   await (f.actor as any).watchInbox();
   assert.equal(f.bootstrap.submissions.length, 1);
   assert.equal(f.bootstrap.submissions[0].state, "unknown");
-  assert.equal(f.bootstrap.submissions[0].result, undefined);
-  assert.equal(f.bootstrap.inbox?.after, 1);
+  assert.equal(f.bootstrap.delivered, "1");
 });
 
-test("standalone Form binds current manager and exact native scope; one response has one durable uncertain attempt", async (t) => {
+const answer = (name: string, value = "Approve") => ({
+  status: "resolved" as const,
+  responses: { manager: { answers: { [name]: value }, at } },
+});
+const noTeam = (name: string) => assert.notEqual(name, "team", "approval asks name no answerer");
+
+test("an approval ask binds the exact native scope; one manager answer has one durable uncertain attempt", async (t) => {
   const f = fixture(t);
   await f.ready();
   let created: any,
     reads = 0;
   (f.actor.hub as any).call = async (name: string, args: any) => {
-    if (name === "team") return { structuredContent: team() };
+    noTeam(name);
     if (name === "form_create") {
-      created = form(args, { responses: { manager: { [args.fields[0].name]: "Approve" } } });
+      created = form(args, answer(args.fields[0].name));
       return { structuredContent: created };
     }
     assert.equal(name, "form_get");
@@ -214,10 +299,16 @@ test("standalone Form binds current manager and exact native scope; one response
   };
   f.request();
   await settle();
+  assert.equal(created.approval, true);
   assert.equal(created.workID, undefined);
-  assert.deepEqual(created.respondentIDs, ["manager"]);
+  assert.equal(created.title, "Grant Codex network access for this turn?");
+  assert.match(created.context, /Requested scope: \{"network":\{"enabled":true\}\}/);
   assert.match(created.fields[0].name, /field_[a-f0-9]{64}_0/);
-  assert.equal(created.fields[0].label.includes("native session session"), false);
+  assert.deepEqual(
+    created.fields[0].options.map((o: any) => o.value),
+    ["Approve", "Decline", "Cancel"],
+  );
+  assert.equal(JSON.stringify(created).includes("session"), false);
   assert.deepEqual(f.answers, [
     { id: "request", response: { permissions: { network: { enabled: true } }, scope: "turn" } },
   ]);
@@ -227,7 +318,6 @@ test("standalone Form binds current manager and exact native scope; one response
   assert.equal(binding.answerAttempt?.formRevision, 1);
   f.event("serverRequest/resolved", { requestId: "request" });
   assert.equal(binding.state, "resolved");
-  assert.equal(created.status, "open");
   f.request();
   await settle();
   assert.equal(f.answers.length, 1);
@@ -235,72 +325,76 @@ test("standalone Form binds current manager and exact native scope; one response
 
 for (const invalid of [
   "requester",
-  "respondent",
+  "approval",
   "fields",
   "closed",
-  "manager",
   "terminal",
   "session",
   "desktop",
 ])
-  test(`Form ${invalid} cannot authorize an unrelated/stale native request`, async (t) => {
+  test(`an ask's ${invalid} change cannot authorize an unrelated/stale native request`, async (t) => {
     const f = fixture(t);
     await f.ready();
     let created: any;
     (f.actor.hub as any).call = async (name: string, args: any) => {
-      if (name === "team") return { structuredContent: team() };
+      noTeam(name);
       if (name === "form_create") {
         created = form(args);
         return { structuredContent: created };
       }
       assert.equal(name, "form_get");
-      const answer = {
-        ...created,
-        responses: { manager: { [created.fields[0].name]: "Approve" } },
-      };
-      if (invalid === "requester") answer.requesterID = "other";
-      if (invalid === "respondent") answer.respondentIDs = ["other"];
-      if (invalid === "fields") answer.fields = [{ name: "fake", label: "fake", required: false }];
+      const answered = { ...created, ...answer(created.fields[0].name) };
+      if (invalid === "requester") answered.requesterID = "other";
+      if (invalid === "approval") answered.approval = false;
+      if (invalid === "fields")
+        answered.fields = [{ name: "fake", label: "fake", required: false }];
       if (invalid === "closed") {
-        answer.status = "resolved";
-        answer.responses = {};
-        answer.resolution = { text: "accept", at: created.createdAt };
+        answered.status = "cancelled";
+        answered.responses = {};
+        answered.resolution = { text: "approve", at };
       }
-      if (invalid === "manager")
-        (f.actor.hub as any).call = async () => ({
-          structuredContent: {
-            root: "root",
-            positions: [{ ...team().positions[0], manager: "replacement" }],
-          },
-        });
       if (invalid === "terminal")
         f.event("turn/completed", { turn: { id: "turn", status: "completed", items: [] } });
       if (invalid === "session") (f.actor as any).sessionId = "replacement";
       if (invalid === "desktop") f.bootstrap.config.approvalAuthority = "desktop";
-      return { structuredContent: answer };
+      return { structuredContent: answered };
     };
     f.request();
     await settle();
     assert.equal(f.answers.length, 0);
   });
 
-test("lost Form issuance recovers one exact requester's Form, never reissues or resends an uncertain answer after restart", async (t) => {
+test("lost ask issuance recovers one exact requester's ask, never reissues or resends an uncertain answer after restart", async (t) => {
   const f = fixture(t);
   await f.ready();
   let created: any,
     creates = 0,
     reads = false;
   const call = async (name: string, args: any): Promise<any> => {
-    if (name === "team") return { structuredContent: team() };
+    noTeam(name);
     if (name === "form_create") {
       creates++;
-      created = form(args, { responses: { manager: { [args.fields[0].name]: "Approve" } } });
+      created = form(args, answer(args.fields[0].name));
       throw new Error("lost creation reply");
     }
     if (name === "form_list") {
       assert.equal(args.requesterID, "actor");
       if (!reads) throw new Error("held read unavailable");
-      return { structuredContent: { items: args.after ? [] : [created], after: 1 } };
+      return {
+        structuredContent: {
+          items: args.after
+            ? []
+            : [
+                form(
+                  { title: "Other", fields: [{ name: "x", label: "x", required: false }] },
+                  { formID: "x" },
+                ),
+                created,
+              ],
+          next: args.after ? null : "page-2",
+          actors: {},
+        },
+      };
     }
     assert.equal(name, "form_get");
     return { structuredContent: created };
@@ -346,10 +440,10 @@ test("lost Form issuance recovers one exact requester's Form, never reissues or 
   assert.ok(Object.values(third.store.data.actors.actor.approvals ?? {})[0].answerAttempt);
 });
 
-test("old private rows remain readable and exact; missing Workspace state is inert", async (t) => {
+test("old private rows remain readable and exact", async (t) => {
   const f = fixture(t);
-  const old = structuredClone(f.store.data);
-  delete old.actors.actor.inbox;
+  const old: any = structuredClone(f.store.data);
+  old.actors.actor.inbox = { scope: "historical", after: 3, baseline: [] };
   old.actors.actor.cursor = 7;
   old.actors.actor.enabled = false;
   old.actors.actor.submissions = [
@@ -384,23 +478,17 @@ test("old private rows remain readable and exact; missing Workspace state is ine
   writeFileSync(f.store.file, JSON.stringify(old));
   const reopened = new RuntimeStore(f.root);
   assert.deepEqual(reopened.data, old);
-  assert.equal(reopened.data.actors.actor.inbox, undefined);
   assert.equal(reopened.data.actors.actor.submissions.length, 1);
-  f.bootstrap.inbox = undefined;
-  (f.actor.hub as any).call = async () =>
-    assert.fail("Missing historical baseline must hold inbox delivery");
-  await (f.actor as any).watchInbox();
-  assert.match(f.actor.lastError ?? "", /authoritative historical Message baseline/);
 });
 
 for (const matches of [0, 2])
-  test(`uncertain Form creation with ${matches} matches never duplicates issuance or grants native input`, async (t) => {
+  test(`uncertain ask creation with ${matches} matches never duplicates issuance or grants native input`, async (t) => {
     const f = fixture(t);
     await f.ready();
     let created: any,
       creates = 0;
     (f.actor.hub as any).call = async (name: string, args: any) => {
-      if (name === "team") return { structuredContent: team() };
+      noTeam(name);
       if (name === "form_create") {
         creates++;
         created = form(args);
@@ -409,14 +497,9 @@ for (const matches of [0, 2])
       assert.equal(name, "form_list");
       return {
         structuredContent: {
-          items: args.after
-            ? []
-            : Array.from({ length: matches }, (_, n) => ({
-                ...created,
-                formID: `form-${n}`,
-                cursor: n + 1,
-              })),
-          after: matches,
+          items: Array.from({ length: matches }, (_, n) => ({ ...created, formID: `form-${n}` })),
+          next: null,
+          actors: {},
         },
       };
     };
@@ -426,5 +509,5 @@ for (const matches of [0, 2])
     await settle();
     assert.equal(creates, 1);
     assert.equal(f.answers.length, 0);
-    assert.match(f.actor.lastError ?? "", matches ? /Multiple Forms/ : /issuance is uncertain/);
+    assert.match(f.actor.lastError ?? "", matches ? /Multiple asks/ : /issuance is uncertain/);
   });

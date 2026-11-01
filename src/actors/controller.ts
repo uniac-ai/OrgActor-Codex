@@ -1,20 +1,19 @@
 import { EventEmitter } from "node:events";
 import { setTimeout as delay } from "node:timers/promises";
-import { BUILTINS, Form, Message } from "@agentorg/cli/contract";
+import { BUILTINS, Form, Work } from "@agentorg/cli/contract";
+import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import type { CodexAdapter, NativeEvent } from "../codex/index.js";
 import { ActorHubSession } from "../hub/actor.js";
 import { type ActorSnapshot, Fault } from "../management/schema.js";
-import {
-  type Bootstrap,
-  hash,
-  inboxScope,
-  type RuntimeStore,
-  type Submission,
-} from "../runtime/index.js";
+import { type Bootstrap, hash, type RuntimeStore, type Submission } from "../runtime/index.js";
 import { nativeForm } from "./forms.js";
 import { supportedRequests } from "./requests.js";
 
 type PendingRequest = { id: string | number; method: string; params: any };
+type Attention = ReturnType<typeof BUILTINS.attention.response.parse>;
+type Item = Attention["items"][number];
+/** The longest `attention` wait the Hub serves, in seconds. */
+const WAIT = 600;
 export class ActorController extends EventEmitter {
   hub?: ActorHubSession;
   adapter?: CodexAdapter;
@@ -87,9 +86,13 @@ export class ActorController extends EventEmitter {
       const hub = new ActorHubSession(this.bootstrap.hubUrl);
       this.hub = hub;
       hub.connection.once("closed", () => this.emit("disconnected"));
-      this.hubOpening = hub.open(this.bootstrap.actorId, this.bootstrap.credential).then(() => {
-        if (!this.stopped) this.hubReady = true;
-      });
+      this.hubOpening = hub
+        .open(this.bootstrap.actorId, this.bootstrap.credential)
+        .then(async () => {
+          // A new Actor's delivery starts at the Hub's current position, as soon as it connects.
+          if (this.bootstrap.delivered === undefined) await this.startPosition(hub);
+          if (!this.stopped) this.hubReady = true;
+        });
     }
     await this.hubOpening;
     if (this.stopped || !this.bootstrap.threadId) return;
@@ -482,8 +485,8 @@ export class ActorController extends EventEmitter {
             this.lastError = Object.values(this.bootstrap.approvals ?? {}).some(
               (b) => b.sessionId === this.sessionId && b.requestId === id && b.answerAttempt,
             )
-              ? "Native answer delivery is unconfirmed and will not be replayed. The Form remains open."
-              : "The approval is waiting for its Form respondent.";
+              ? "Native answer delivery is unconfirmed and will not be replayed."
+              : "The approval ask is waiting for a manager's answer.";
         })
         .finally(() => this.routing.delete(id));
     }
@@ -515,15 +518,6 @@ export class ActorController extends EventEmitter {
       !this.completedTurns.has(request.params.turnId) &&
       this.bootstrap.config.approvalAuthority === "hub";
     if (!currentRequest()) return;
-    const team = BUILTINS.team.response.parse(
-      (await hub.call(hub.alias("hub:team", "team"), { depth: 0 })).structuredContent,
-    );
-    const self = team?.positions?.find((p: any) => p.id === this.bootstrap.actorId);
-    if (!self?.manager || !currentRequest()) {
-      this.lastError =
-        "This request has no current Hub manager destination. Resolve it before changing the approval owner.";
-      return;
-    }
     this.bootstrap.approvals ??= {};
     const key = hash(
       JSON.stringify([this.bootstrap.threadId, sessionId, request.params.turnId, id]),
@@ -542,14 +536,11 @@ export class ActorController extends EventEmitter {
           : "This native input shape requires its native input owner and remains pending.";
       return;
     }
-    const input = BUILTINS.form_create.request.parse({
-      respondentIDs: [self.manager],
-      fields: projection.fields,
-    });
+    const input = projection.ask;
     const legacy = this.bootstrap.approvals[id];
     if (legacy && !legacy.sessionId && legacy.state !== "resolved") {
       this.lastError =
-        "A historical question binding needs reconciliation before a new Form can be issued.";
+        "A historical question binding needs reconciliation before a new ask can be issued.";
       return;
     }
     let binding = this.bootstrap.approvals[key];
@@ -558,7 +549,6 @@ export class ActorController extends EventEmitter {
       (binding.state === "resolved" ||
         binding.threadId !== this.bootstrap.threadId ||
         binding.turnId !== this.turnId ||
-        binding.answerer !== self.manager ||
         binding.method !== request.method ||
         JSON.stringify(binding.fields) !== JSON.stringify(input.fields))
     )
@@ -569,7 +559,6 @@ export class ActorController extends EventEmitter {
         threadId: this.bootstrap.threadId,
         turnId: this.turnId,
         method: request.method,
-        answerer: self.manager,
         sessionId,
         inputIds: [...this.appliedInputs],
         fields: input.fields,
@@ -580,13 +569,13 @@ export class ActorController extends EventEmitter {
     }
     if (binding.answerAttempt) {
       this.lastError =
-        "The selected Form response has an uncertain native delivery outcome and will not be replayed.";
+        "The selected answer has an uncertain native delivery outcome and will not be replayed.";
       return;
     }
     const matchesBinding = (form: Form) =>
       form.requesterID === this.bootstrap.actorId &&
+      form.approval &&
       form.workID === undefined &&
-      JSON.stringify(form.respondentIDs) === JSON.stringify([binding.answerer]) &&
       JSON.stringify(form.fields) === JSON.stringify(binding.fields);
     const readForm = async (name: "form_create" | "form_get", args: Record<string, unknown>) => {
       const result = await hub.call(hub.alias("hub:forms", name), args);
@@ -596,7 +585,7 @@ export class ActorController extends EventEmitter {
       return form;
     };
     if (binding.state === "asking" && !binding.formId) {
-      // Only a newly persisted binding may issue a Form. Existing uncertain bindings only read.
+      // Only a newly persisted binding may issue an ask. Existing uncertain bindings only read.
       if (!Object.hasOwn(binding, "formId")) {
         binding.formId = null;
         this.store.save();
@@ -610,32 +599,32 @@ export class ActorController extends EventEmitter {
           binding.formId = form.formID;
           this.store.save();
         } catch {
-          // Issuance is reconciled through the requester's visible Forms below.
+          // Issuance is reconciled through the requester's visible asks below.
         }
       }
     }
     if (!binding.formId) {
       const matches = new Map<string, Form>();
-      let after = 0;
+      let after: string | undefined;
       while (currentRequest()) {
         const result = await hub.call(hub.alias("hub:forms", "form_list"), {
           requesterID: this.bootstrap.actorId,
-          after,
+          ...(after === undefined ? {} : { after }),
           limit: 100,
         });
         if (result.isError) throw new Error("Form traversal refused");
         const page = BUILTINS.form_list.response.parse(result.structuredContent);
         for (const form of page.items.filter(matchesBinding)) matches.set(form.formID, form);
-        if (!page.items.length) break;
-        if (page.after <= after) throw new Error("Invalid Form continuation");
-        after = page.after;
+        if (page.next === null) break;
+        if (page.next === after) throw new Error("Invalid Form continuation");
+        after = page.next;
       }
       if (!currentRequest()) return;
       if (matches.size !== 1) {
         this.lastError =
           matches.size > 1
-            ? "Multiple Forms match this native request; no answer was applied."
-            : "Form issuance is uncertain; no matching Form was observed and no duplicate was issued.";
+            ? "Multiple asks match this native request; no answer was applied."
+            : "Ask issuance is uncertain; no matching ask was observed and no duplicate was issued.";
         return;
       }
       binding.formId = [...matches.keys()][0];
@@ -645,17 +634,11 @@ export class ActorController extends EventEmitter {
     this.store.save();
     while (currentRequest()) {
       const form = await readForm("form_get", { formID: binding.formId });
-      if (form.formID !== binding.formId || form.status !== "open") return;
-      if (Object.hasOwn(form.responses, binding.answerer)) {
-        const answered = form.responses[binding.answerer];
-        const current = BUILTINS.team.response.parse(
-          (await hub.call(hub.alias("hub:team", "team"), { depth: 0 })).structuredContent,
-        );
-        const manager = current?.positions?.find(
-          (p: any) => p.id === this.bootstrap.actorId,
-        )?.manager;
+      if (form.formID !== binding.formId) return;
+      // Only the asker's managers answer an approval, and the first answer resolves it.
+      const [answered] = Object.values(form.responses);
+      if (answered) {
         if (
-          manager !== binding.answerer ||
           !currentRequest() ||
           binding.answerAttempt ||
           JSON.stringify(binding.inputIds) !== JSON.stringify([...this.appliedInputs])
@@ -663,20 +646,20 @@ export class ActorController extends EventEmitter {
           return;
         let response: object;
         try {
-          response = projection.response(answered);
+          response = projection.response(answered.answers);
         } catch {
           this.lastError =
-            "Revise the Form response to match the requested values and constraints.";
-          await delay(2000, undefined, { signal: this.closed.signal, ref: false });
-          continue;
+            "The answer does not match the native request, which remains pending for its native input owner.";
+          return;
         }
         binding.answerAttempt = { formRevision: form.revision, response };
         this.store.save();
-        this.lastError =
-          "Native answer delivery was attempted once and is unconfirmed. The Form remains open.";
+        this.lastError = "Native answer delivery was attempted once and is unconfirmed.";
         adapter?.answer(request.id, response);
         return;
       }
+      // Closing the ask answers nothing: the request stays with its native input owner.
+      if (form.status !== "open") return;
       await delay(2000, undefined, { signal: this.closed.signal, ref: false });
     }
   }
@@ -692,64 +675,140 @@ export class ActorController extends EventEmitter {
       this.bootstrap.config.approvalAuthority === "desktop"
         ? "Answer this request in Codex Desktop."
         : bound
-          ? "Respond to the matching Form as its designated respondent."
-          : "This request has no bound Form and remains pending for its native input owner.",
+          ? "Answer the matching approval ask as one of this Actor's managers."
+          : "This request has no bound ask and remains pending for its native input owner.",
     );
   }
+  /** Record the Hub's current `attention` position, from which delivery starts. */
+  private async startPosition(hub: ActorHubSession): Promise<string> {
+    const result = await hub.call(hub.alias("hub:attention", "attention"), {});
+    if (result.isError) throw new Error("Attention refused");
+    this.bootstrap.delivered = BUILTINS.attention.response.parse(result.structuredContent).next;
+    this.store.save();
+    return this.bootstrap.delivered;
+  }
+  /** Deliver what concerns this Actor, read with `attention` after this executor's position. */
   private async watchInbox(): Promise<void> {
-    const scope = inboxScope(this.bootstrap);
-    const checkpoint = this.bootstrap.inbox;
-    const baseline = Message.pick({ messageID: true, recipientID: true, cursor: true })
-      .array()
-      .safeParse(checkpoint?.baseline);
-    if (
-      !checkpoint ||
-      checkpoint.scope !== scope ||
-      !baseline.success ||
-      baseline.data.some((row) => row.recipientID !== this.bootstrap.actorId) ||
-      new Set(baseline.data.map((row) => row.messageID)).size !== baseline.data.length
-    ) {
-      this.lastError =
-        "Inbox migration requires an authoritative historical Message baseline for this Hub/Actor/native binding.";
-      return;
-    }
-    let after = checkpoint.after;
     while (!this.stopped && this.hub?.connection.connected) {
       const hub = this.hub;
       try {
+        const since = this.bootstrap.delivered ?? (await this.startPosition(hub));
         const result = await hub.call(
-          hub.alias("hub:messages", "message_list"),
-          BUILTINS.message_list.request.parse({ direction: "incoming", after, limit: 100 }),
+          hub.alias("hub:attention", "attention"),
+          { since, wait: WAIT },
+          (WAIT + 30) * 1000,
         );
         if (this.stopped) return;
-        if (result.isError) throw new Error("Inbox refused");
-        const page = BUILTINS.message_list.response.parse(result.structuredContent);
-        let previous = after;
-        for (const message of page.items) {
-          if (message.recipientID !== this.bootstrap.actorId || message.cursor <= previous)
-            throw new Error("Invalid incoming message traversal");
-          const historical = checkpoint.baseline?.find(
-            (row) => row.messageID === message.messageID,
-          );
-          if (historical) {
-            if (
-              historical.recipientID !== message.recipientID ||
-              historical.cursor !== message.cursor
-            )
-              throw new Error("Historical Message baseline mismatch");
-          } else this.enqueue(`message:${message.messageID}`, message.text, message.senderID);
-          previous = message.cursor;
+        if (result.isError) {
+          // A position this Hub never issued, as after its home was replaced, restarts from now.
+          if (!textOf(result).startsWith("invalid:")) throw new Error("Attention refused");
+          delete this.bootstrap.delivered;
+          continue;
         }
-        if (page.after !== previous) throw new Error("Invalid incoming continuation");
-        after = page.after;
-        this.bootstrap.inbox = { ...checkpoint, after };
-        this.store.save();
-        if (!page.items.length && hub.connection.connected)
-          await delay(2000, undefined, { signal: this.closed.signal });
+        const read = BUILTINS.attention.response.parse(result.structuredContent);
+        // One conversation per sender: its last message's window holds the earlier ones.
+        const last = new Map(
+          read.items.filter((i) => i.kind === "message").map((i) => [i.from.actorID, i]),
+        );
+        for (const item of read.items)
+          if (item.kind !== "message" || last.get(item.from.actorID) === item)
+            await this.deliver(hub, item);
+        if (this.stopped) return;
+        if (read.next !== since) {
+          this.bootstrap.delivered = read.next;
+          this.store.save();
+        }
       } catch {
         if (!this.stopped)
           this.lastError = "The Actor inbox is unavailable; reconnect will resume delivery.";
         return;
+      }
+    }
+  }
+  /**
+   * One item as native input: steering the running turn, or starting a turn when idle. Its
+   * receipt is durable before the position moves, and an uncertain input is never replayed.
+   */
+  private async deliver(hub: ActorHubSession, item: Item): Promise<void> {
+    const key = `${item.kind}:${item.recordID}:${item.at}`;
+    const receipt = (id: string) => this.bootstrap.submissions.find((s) => s.id === id);
+    if (receipt(`${key}:next`) || (receipt(key) && !receipt(key)?.failure)) return;
+    const text = await this.frame(hub, item);
+    if (text === undefined) return;
+    const turnId = this.turnId;
+    // A turn waiting on a native request takes no steering; its input starts the next turn.
+    if (
+      !receipt(key) &&
+      turnId &&
+      this.requests.size === 0 &&
+      !this.bootstrap.submissions.some((s) => s.state === "queued")
+    )
+      await this.steer(key, turnId, text, item.from.actorID).catch(() => {});
+    const steered = receipt(key);
+    if (steered && !steered.failure) return;
+    this.enqueue(steered ? `${key}:next` : key, text, item.from.actorID);
+  }
+  /** What one item says to the session, with what to do; nothing for this executor's own asks. */
+  private async frame(hub: ActorHubSession, item: Item): Promise<string | undefined> {
+    const read = async (tool: string, name: string, input: Record<string, unknown>) => {
+      const result = await hub.call(hub.alias(tool, name), input);
+      if (result.isError) throw new Error(`${name} refused`);
+      return result.structuredContent;
+    };
+    const from = item.from.name;
+    const title = JSON.stringify(item.title);
+    switch (item.kind) {
+      case "answer": {
+        const ask = Form.parse(await read("hub:forms", "form_get", { formID: item.recordID }));
+        // The answer to a native request's approval ask goes to that request, not to the model.
+        const fields = JSON.stringify(ask.fields);
+        if (
+          Object.values(this.bootstrap.approvals ?? {}).some(
+            (b) => JSON.stringify(b.fields) === fields,
+          )
+        )
+          return undefined;
+        const response = ask.responses[item.from.actorID];
+        const answers = Object.entries(response?.answers ?? {})
+          .map(([field, answer]) => `${field}: ${answer}`)
+          .join("; ");
+        const note = response?.note === undefined ? "" : ` Note: ${response.note}`;
+        const work =
+          ask.workID === undefined
+            ? undefined
+            : Work.parse(await read("hub:work", "work_get", { ticketID: ask.workID }));
+        const then =
+          work === undefined
+            ? ""
+            : `, then update ${JSON.stringify(work.title)} (${work.ticketID})`;
+        return `${from} answered your ask ${title} (${item.recordID}): ${answers}.${note} Apply it${then}. The ask records the answer; ${ask.status === "open" ? "it collects more until you close it" : "it is resolved"}.`;
+      }
+      case "ask":
+        return `${from}, your report, asks ${title} (${item.recordID}). Read it with form_get, then answer with form_respond, or carry it up as your own ask with cause ${item.recordID}.`;
+      case "assigned":
+        return `${from} assigned you Work ${title} (${item.recordID}). Read it with work_get; set it active with work_update when you start.`;
+      case "review_due":
+        return `${from} submitted ${title} (${item.recordID}) for your review. Read the submission with work_get, then accept it or request changes with work_review.`;
+      case "reviewed":
+        return `${from} reviewed your Work ${title} (${item.recordID}). Read the review with work_get; on requested changes, address them and submit again.`;
+      case "message": {
+        const recent = BUILTINS.message_list.response.parse(
+          await read("hub:messages", "message_list", {
+            counterpartyID: item.from.actorID,
+            before: "latest",
+            limit: 20,
+          }),
+        );
+        // From this Actor's own last message, so a reply arrives with what it answers.
+        const self = this.bootstrap.actorId;
+        const spoke = recent.items.findLastIndex((message) => message.senderID === self);
+        const lines = recent.items
+          .slice(Math.max(spoke, 0))
+          .map(
+            (message) =>
+              `${message.senderID === self ? "you" : from} (${message.messageID}): ${message.text}`,
+          );
+        return `${from} sent you a message. The conversation from your last message in it:\n${lines.join("\n")}\nReply with message_send {recipientID: ${item.from.actorID}}.`;
       }
     }
   }
@@ -837,6 +896,9 @@ function isRefused(error: unknown): error is Fault {
     error instanceof Fault &&
     ["NATIVE_REJECTED", "BACKEND_UNREACHABLE", "EXECUTION_NOT_ADMITTED"].includes(error.code)
   );
+}
+function textOf(result: CallToolResult): string {
+  return result.content.map((part) => (part.type === "text" ? part.text : "")).join("\n");
 }
 function hasInput(turn: any, inputId: string): boolean {
   return turn.items?.some((i: any) => i.type === "userMessage" && i.clientId === inputId) ?? false;

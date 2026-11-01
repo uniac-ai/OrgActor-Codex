@@ -15,6 +15,25 @@ export function requestedPermissions(params: any): object {
     ...(params.permissions?.fileSystem ? { fileSystem: params.permissions.fileSystem } : {}),
   };
 }
+/** At most `max` characters of `text` on one line, for an ask's title. */
+export const clip = (text: string, max = 120): string => {
+  const line = text.replace(/\s+/g, " ").trim();
+  return line.length > max ? `${line.slice(0, max - 1)}…` : line;
+};
+/** The question a permission prompt asks, naming the command or the grant. */
+export function requestTitle(method: string, params: any): string {
+  if (method === "item/commandExecution/requestApproval")
+    return typeof params.command === "string" && params.command.trim()
+      ? clip(`Run ${params.command}?`)
+      : "Run a command?";
+  if (method === "item/fileChange/requestApproval")
+    return clip(`Change files in ${params.grantRoot ?? "the current workspace"}?`);
+  const scope = requestedPermissions(params) as Record<string, unknown>;
+  const grants = [scope.network && "network access", scope.fileSystem && "file access"].filter(
+    Boolean,
+  );
+  return `Grant Codex ${grants.join(" and ") || "permissions"} for this turn?`;
+}
 export function requestReview(method: string, params: any): string {
   const reason = typeof params.reason === "string" ? `\nReason: ${params.reason}` : "";
   if (method === "item/permissions/requestApproval")
@@ -25,7 +44,7 @@ export function requestReview(method: string, params: any): string {
     return `Codex requests file-change approval.\nGrant root: ${params.grantRoot ?? "the current workspace"}${reason}`;
   return params.message ?? "Codex requests input.";
 }
-/** The designated Hub answer can grant only the native request's own requested permissions. */
+/** A manager's answer can grant only the native request's own requested permissions. */
 export function responseFor(method: string, params: any, choice: string, content: unknown): object {
   if (["item/commandExecution/requestApproval", "item/fileChange/requestApproval"].includes(method))
     return { decision: z.enum(["accept", "decline", "cancel"]).parse(choice) };
