@@ -6,13 +6,13 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { setTimeout } from "node:timers/promises";
 
-export const hubRevision = "d44bfc7dfa103fc4da00ffd50b36f094551ed407";
-export const hubPackageSha256 = "7d3dd19740cf90396c324cb3f813433ff456b7e2804f9507b9d0baad352b50da";
+export const hubRevision = "4e795ee6af3af64fd526bfdfcf790b15156295a8";
+export const hubPackageSha256 = "ff8ef123bb3422c361eff356d9c9cbb07aac267ca68ca467c344f5db0339fbb1";
 
 /** Public packaged CLI only, with a caller-owned empty home. */
 export async function startPublicHub(home: string, providerId: string, credential: string) {
   const digest = createHash("sha256")
-    .update(readFileSync(resolve("test/fixtures/agentorg-cli-d44bfc7.tgz")))
+    .update(readFileSync(resolve("test/fixtures/agentorg-cli-4e795ee.tgz")))
     .digest("hex");
   assert.equal(digest, hubPackageSha256);
   mkdirSync(home, { mode: 0o700 });
