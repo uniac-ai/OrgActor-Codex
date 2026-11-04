@@ -4,6 +4,7 @@ import { BUILTINS, Form, Work } from "@agentorg/cli/contract";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import type { CodexAdapter, NativeEvent } from "../codex/index.js";
 import { ActorHubSession } from "../hub/actor.js";
+import { catalogOf, presents } from "../hub/catalog.js";
 import { type ActorSnapshot, Fault } from "../management/schema.js";
 import { type Bootstrap, hash, type RuntimeStore, type Submission } from "../runtime/index.js";
 import { nativeForm } from "./forms.js";
@@ -39,6 +40,8 @@ export class ActorController extends EventEmitter {
   private nativeClosed = false;
   private completedTurns = new Set<string>();
   private toolCalls = new Map<string, { turnId: string; tool: string; completed?: boolean }>();
+  /** One native prompt chooses its ask's Work at a time, so two never both open the thread's. */
+  private choosing: Promise<unknown> = Promise.resolve();
   constructor(
     readonly bootstrap: Bootstrap,
     private store: RuntimeStore,
@@ -481,12 +484,15 @@ export class ActorController extends EventEmitter {
       this.routing.add(id);
       void this.routeApproval(id)
         .catch(() => {
-          if (!this.stopped)
-            this.lastError = Object.values(this.bootstrap.approvals ?? {}).some(
-              (b) => b.sessionId === this.sessionId && b.requestId === id && b.answerAttempt,
-            )
-              ? "Native answer delivery is unconfirmed and will not be replayed."
-              : "The approval ask is waiting for a manager's answer.";
+          if (this.stopped) return;
+          const bound = Object.values(this.bootstrap.approvals ?? {}).filter(
+            (b) => b.sessionId === this.sessionId && b.requestId === id,
+          );
+          this.lastError = bound.some((b) => b.answerAttempt)
+            ? "Native answer delivery is unconfirmed and will not be replayed."
+            : bound.some((b) => b.formId)
+              ? "The approval ask is waiting for a manager's answer."
+              : "No approval ask is issued yet; the request stays with its native input owner.";
         })
         .finally(() => this.routing.delete(id));
     }
@@ -575,65 +581,80 @@ export class ActorController extends EventEmitter {
     const matchesBinding = (form: Form) =>
       form.requesterID === this.bootstrap.actorId &&
       form.approval &&
-      form.workID === undefined &&
+      form.workID === binding.ticketId &&
       JSON.stringify(form.fields) === JSON.stringify(binding.fields);
-    const readForm = async (name: "form_create" | "form_get", args: Record<string, unknown>) => {
-      const result = await hub.call(hub.alias("hub:forms", name), args);
-      if (result.isError) throw new Error("Form operation refused");
-      const form = Form.parse(result.structuredContent);
-      if (!matchesBinding(form)) throw new Error("Form binding mismatch");
+    const readAsk = async (askID: string) => {
+      const form = askOf(await this.read(hub, "hub:work", "work_get", { askID }), askID);
+      if (!form || !matchesBinding(form)) throw new Error("Ask binding mismatch");
       return form;
     };
-    if (binding.state === "asking" && !binding.formId) {
+    const replaced = () =>
+      this.store.data.actors[this.bootstrap.actorId] !== this.bootstrap ||
+      this.bootstrap.approvals?.[key] !== binding;
+    // A refused ask created nothing, so its prompt chooses its Work and asks once more; a second
+    // refusal leaves it to the next routing pass.
+    for (let tries = 2; !binding.formId; ) {
+      let refused = false;
       // Only a newly persisted binding may issue an ask. Existing uncertain bindings only read.
-      if (!Object.hasOwn(binding, "formId")) {
+      if (binding.state === "asking" && !Object.hasOwn(binding, "formId")) {
+        const choice = this.choosing.then(() => this.askWork(hub));
+        this.choosing = choice.catch(() => {});
+        const ticketId = await choice;
+        if (ticketId === undefined || !currentRequest() || replaced()) return;
+        binding.ticketId = ticketId;
         binding.formId = null;
         this.store.save();
         try {
-          const form = await readForm("form_create", input);
-          if (
-            this.store.data.actors[this.bootstrap.actorId] !== this.bootstrap ||
-            this.bootstrap.approvals?.[key] !== binding
-          )
-            return;
-          binding.formId = form.formID;
-          this.store.save();
+          const result = await hub.call(hub.alias("hub:work", "work_update"), {
+            ticketID: ticketId,
+            ask: input,
+          });
+          if (replaced()) return;
+          refused = result.isError === true;
+          const form = refused ? undefined : askOf(result.structuredContent, null);
+          if (form && matchesBinding(form)) {
+            binding.formId = form.formID;
+            this.store.save();
+            break;
+          }
         } catch {
-          // Issuance is reconciled through the requester's visible asks below.
+          // A lost reply is reconciled through the bound Work's asks below.
         }
       }
-    }
-    if (!binding.formId) {
-      const matches = new Map<string, Form>();
-      let after: string | undefined;
-      while (currentRequest()) {
-        const result = await hub.call(hub.alias("hub:forms", "form_list"), {
-          requesterID: this.bootstrap.actorId,
-          ...(after === undefined ? {} : { after }),
-          limit: 100,
-        });
-        if (result.isError) throw new Error("Form traversal refused");
-        const page = BUILTINS.form_list.response.parse(result.structuredContent);
-        for (const form of page.items.filter(matchesBinding)) matches.set(form.formID, form);
-        if (page.next === null) break;
-        if (page.next === after) throw new Error("Invalid Form continuation");
-        after = page.next;
-      }
+      // A binding from before asks on Work has no Work to read its asks from.
+      const matches =
+        binding.ticketId === undefined
+          ? []
+          : (
+              Work.parse(
+                await this.read(hub, "hub:work", "work_get", { ticketID: binding.ticketId }),
+              ).asks ?? []
+            ).filter(matchesBinding);
       if (!currentRequest()) return;
-      if (matches.size !== 1) {
-        this.lastError =
-          matches.size > 1
-            ? "Multiple asks match this native request; no answer was applied."
-            : "Ask issuance is uncertain; no matching ask was observed and no duplicate was issued.";
-        return;
+      if (matches.length === 1) {
+        binding.formId = matches[0].formID;
+        break;
       }
-      binding.formId = [...matches.keys()][0];
+      if (refused && matches.length === 0) {
+        delete binding.formId;
+        delete binding.ticketId;
+        this.store.save();
+        this.lastError =
+          "The Hub refused the approval ask; the request stays with its native input owner until it is asked again.";
+        if (--tries === 0) return;
+        continue;
+      }
+      this.lastError =
+        matches.length > 1
+          ? "Multiple asks match this native request; no answer was applied."
+          : "Ask issuance is uncertain; no matching ask was observed and no duplicate was issued.";
+      return;
     }
     if (!currentRequest() || binding.state === "resolved") return;
     binding.state = "waiting";
     this.store.save();
     while (currentRequest()) {
-      const form = await readForm("form_get", { formID: binding.formId });
+      const form = await readAsk(binding.formId);
       if (form.formID !== binding.formId) return;
       // Only the asker's managers answer an approval, and the first answer resolves it.
       const [answered] = Object.values(form.responses);
@@ -658,10 +679,106 @@ export class ActorController extends EventEmitter {
         adapter?.answer(request.id, response);
         return;
       }
-      // Closing the ask answers nothing: the request stays with its native input owner.
+      // Closing or cancelling the ask answers nothing: the request stays with its native input owner.
       if (form.status !== "open") return;
       await delay(2000, undefined, { signal: this.closed.signal, ref: false });
     }
+  }
+  /** A Hub interface's result; a refusal throws. */
+  private async read(
+    hub: ActorHubSession,
+    tool: string,
+    name: string,
+    input: Record<string, unknown>,
+  ): Promise<unknown> {
+    const result = await hub.call(hub.alias(tool, name), input);
+    if (result.isError) throw new Error(`${name} refused`);
+    return result.structuredContent;
+  }
+  /**
+   * The Work a native prompt's ask is on: the Actor's most recently updated active Work, else the
+   * Work this executor opened for its thread while the Actor owns it and it is open or active,
+   * else a new one, opened after a durable marker. A lost creation reply is found again by its
+   * exact title. A refused creation, or none found, lets the next prompt open one.
+   */
+  private async askWork(hub: ActorHubSession): Promise<string | undefined> {
+    const self = this.bootstrap.actorId;
+    const threadId = this.bootstrap.threadId;
+    const list = async (filter: Record<string, unknown>) => {
+      const items: Work[] = [];
+      for (let after: string | undefined; ; ) {
+        const page = BUILTINS.work_list.response.parse(
+          await this.read(hub, "hub:work", "work_list", {
+            ...filter,
+            ...(after === undefined ? {} : { after }),
+            limit: 100,
+          }),
+        );
+        items.push(...page.items);
+        if (page.next === null) return items;
+        if (page.next === after) throw new Error("Invalid Work continuation");
+        after = page.next;
+      }
+    };
+    // Open Work is counted as not started; a lost write leaves it open, and it is reused so.
+    const started = async (work: Work) => {
+      if (work.status === "open")
+        await this.read(hub, "hub:work", "work_update", {
+          ticketID: work.ticketID,
+          status: "active",
+        }).catch(() => {});
+      return work.ticketID;
+    };
+    const [active] = BUILTINS.work_list.response.parse(
+      await this.read(hub, "hub:work", "work_list", {
+        ownerID: self,
+        status: ["active"],
+        order: "recent",
+        limit: 1,
+      }),
+    ).items;
+    if (active) return active.ticketID;
+    const title = `Codex thread ${threadId.slice(0, 8)}`;
+    let kept = this.bootstrap.threadWork;
+    if (kept?.threadId === threadId && kept.ticketId) {
+      const result = await hub.call(hub.alias("hub:work", "work_get"), { ticketID: kept.ticketId });
+      const work = result.isError ? undefined : Work.parse(result.structuredContent);
+      // Only its owner asks on Work, so a thread Work handed on is no longer the thread's.
+      if (work?.ownerID === self && ["open", "active"].includes(work.status)) return started(work);
+    }
+    const uncertain = (forget: boolean) => {
+      if (forget && this.bootstrap.threadWork === kept) {
+        delete this.bootstrap.threadWork;
+        this.store.save();
+      }
+      this.lastError =
+        "The thread's Work is uncertain; no ask was issued and the request stays with its native input owner.";
+      return undefined;
+    };
+    if (kept?.threadId !== threadId || kept.ticketId) {
+      kept = { threadId, ticketId: null };
+      this.bootstrap.threadWork = kept;
+      this.store.save();
+      const created = await hub
+        .call(hub.alias("hub:work", "work_create"), { title })
+        .catch(() => undefined);
+      // A refusal opened nothing.
+      if (created?.isError) return uncertain(true);
+      if (created) {
+        const work = Work.parse(created.structuredContent);
+        kept.ticketId = work.ticketID;
+        this.store.save();
+        return started(work);
+      }
+    }
+    // An unknown reply: the Work it opened has the exact title; with none, nothing was opened.
+    const found = (
+      await list({ ownerID: self, requesterID: self, status: ["open", "active"] })
+    ).filter((work) => work.title === title);
+    if (found.length !== 1) return uncertain(found.length === 0);
+    kept.ticketId = found[0].ticketID;
+    this.store.save();
+    return started(found[0]);
   }
   async checkRequest(id: string): Promise<void> {
     if (!this.requests.has(id))
@@ -749,17 +866,23 @@ export class ActorController extends EventEmitter {
   }
   /** What one item says to the session, with what to do; nothing for this executor's own asks. */
   private async frame(hub: ActorHubSession, item: Item): Promise<string | undefined> {
-    const read = async (tool: string, name: string, input: Record<string, unknown>) => {
-      const result = await hub.call(hub.alias(tool, name), input);
-      if (result.isError) throw new Error(`${name} refused`);
-      return result.structuredContent;
-    };
     const from = item.from.name;
     const title = JSON.stringify(item.title);
+    // Answering and raising name work_answer, which the Actor's level may not present.
+    const answer = catalogOf(hub.tools).get("hub:work")?.interfaces.get("work_answer");
+    const answering = hub.tools.some(
+      (tool) => tool.name === answer && presents(this.bootstrap.config.level, tool),
+    );
     switch (item.kind) {
-      case "answer": {
-        const ask = Form.parse(await read("hub:forms", "form_get", { formID: item.recordID }));
-        // The answer to a native request's approval ask goes to that request, not to the model.
+      case "answer":
+      case "raised": {
+        const found = await this.read(hub, "hub:work", "work_get", { askID: item.recordID });
+        const work = isForm(found) ? undefined : Work.parse(found);
+        const ask = work
+          ? work.asks?.find((each) => each.formID === item.recordID)
+          : Form.parse(found);
+        if (!ask) throw new Error("work_get returned no ask");
+        // A native request's approval ask is the request's, not the model's.
         const fields = JSON.stringify(ask.fields);
         if (
           Object.values(this.bootstrap.approvals ?? {}).some(
@@ -767,15 +890,16 @@ export class ActorController extends EventEmitter {
           )
         )
           return undefined;
+        if (item.kind === "raised")
+          return `${from} raised your ask ${title} (${item.recordID}) to its manager; it stays open until someone answers it. Keep working on what doesn't depend on it.`;
         const response = ask.responses[item.from.actorID];
         const answers = Object.entries(response?.answers ?? {})
           .map(([field, answer]) => `${field}: ${answer}`)
           .join("; ");
-        const note = response?.note === undefined ? "" : ` Note: ${response.note}`;
-        const work =
-          ask.workID === undefined
-            ? undefined
-            : Work.parse(await read("hub:work", "work_get", { ticketID: ask.workID }));
+        const note =
+          response?.note === undefined
+            ? ""
+            : ` Note: ${response.note}${/[.!?]$/.test(response.note) ? "" : "."}`;
         const then =
           work === undefined
             ? ""
@@ -783,16 +907,37 @@ export class ActorController extends EventEmitter {
         return `${from} answered your ask ${title} (${item.recordID}): ${answers}.${note} Apply it${then}. The ask records the answer; ${ask.status === "open" ? "it collects more until you close it" : "it is resolved"}.`;
       }
       case "ask":
-        return `${from}, your report, asks ${title} (${item.recordID}). Read it with form_get, then answer with form_respond, or carry it up as your own ask with cause ${item.recordID}.`;
+        return `${from} routes you the ask ${title} (${item.recordID}). Read it with work_get {askID: "${item.recordID}"}${answering ? ", then answer it with work_answer {askID, answers, note?}, or raise it one manager up with work_answer {askID, raise: true}" : ""}.`;
       case "assigned":
-        return `${from} assigned you Work ${title} (${item.recordID}). Read it with work_get; set it active with work_update when you start.`;
-      case "review_due":
-        return `${from} submitted ${title} (${item.recordID}) for your review. Read the submission with work_get, then accept it or request changes with work_review.`;
+        return `${from} gave you Work ${title} (${item.recordID}). Read it with work_get; set it active with work_update when you start.`;
+      case "updated": {
+        // A changed Work may have been cancelled.
+        const work = Work.parse(
+          await this.read(hub, "hub:work", "work_get", { ticketID: item.recordID }),
+        );
+        return work.status === "cancelled"
+          ? `${from} cancelled your Work ${title} (${item.recordID}); its open asks are cancelled. Stop working on it.`
+          : `${from} changed your Work ${title} (${item.recordID}). Read it with work_get before your next write to it.`;
+      }
+      case "review_due": {
+        // A submission is answered by its ID.
+        const { submission } = Work.parse(
+          await this.read(hub, "hub:work", "work_get", { ticketID: item.recordID }),
+        );
+        const id = submission ? `"${submission.submissionID}"` : "<its submissionID>";
+        const answer = answering
+          ? `, then answer it with work_answer {askID: ${id}, answers: {verdict: "accepted" or "changes_requested"}, note?}; requesting changes needs the note`
+          : "";
+        // A submission a close re-routes comes from the Actor that closed, not from its submitter.
+        return submission && submission.ownerID !== item.from.actorID
+          ? `${from} closed the Actor the submission of ${title} (${item.recordID}) waited on; it now waits for your answer. Read the submission with work_get${answer}.`
+          : `${from} submitted ${title} (${item.recordID}) for your answer. Read the submission with work_get${answer}.`;
+      }
       case "reviewed":
-        return `${from} reviewed your Work ${title} (${item.recordID}). Read the review with work_get; on requested changes, address them and submit again.`;
+        return `${from} answered your submission of ${title} (${item.recordID}). Read the answer with work_get; on requested changes, address them and submit again.`;
       case "message": {
         const recent = BUILTINS.message_list.response.parse(
-          await read("hub:messages", "message_list", {
+          await this.read(hub, "hub:messages", "message_list", {
             counterpartyID: item.from.actorID,
             before: "latest",
             limit: 20,
@@ -889,6 +1034,15 @@ export class ActorController extends EventEmitter {
     this.hub = undefined;
     this.adapter = undefined;
   }
+}
+function isForm(record: unknown): record is Form {
+  return typeof record === "object" && record !== null && "formID" in record;
+}
+/** The ask `askID` from a Work | Form result: the Form itself, or that ask on the Work. */
+function askOf(record: unknown, askID: string | null | undefined): Form | undefined {
+  return isForm(record)
+    ? Form.parse(record)
+    : Work.parse(record).asks?.find((ask) => ask.formID === askID);
 }
 function isRefused(error: unknown): error is Fault {
   return (

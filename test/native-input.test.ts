@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
-import { BUILTINS, Form } from "@agentorg/cli/contract";
+import { BUILTINS, type Form } from "@agentorg/cli/contract";
 import { AjvJsonSchemaValidator } from "@modelcontextprotocol/sdk/validation/ajv-provider.js";
-import { deferred, nativeFormFixture } from "./native-form-fixture.js";
+import { askIn, deferred, nativeFormFixture, readAsk } from "./native-form-fixture.js";
 
 const validate = (name: string) =>
   new AjvJsonSchemaValidator().getValidator(
@@ -204,18 +204,16 @@ for (const c of cases)
     const f = await nativeFormFixture(t);
     const call = f.session.call.bind(f.session);
     f.session.call = async (name, args, timeout) => {
-      if (name === f.session.alias("hub:forms", "form_get")) {
-        requested.resolve(String(args.formID));
+      if (name === f.session.alias("hub:work", "work_get") && args.askID !== undefined) {
+        requested.resolve(String(args.askID));
         await release.promise;
       }
       return call(name, args, timeout);
     };
     f.event(c.method, c.params, "fixture-request");
     const formID = await requested.promise;
-    const read = await f.root.call("form_get", { formID });
-    assert.ok(read.state === "done");
-    const form = Form.parse(read.value);
-    assert.equal(form.workID, undefined);
+    const form = await readAsk(f.root, formID);
+    assert.equal(form.workID, f.bootstrap.threadWork?.ticketId, "asked on the thread's Work");
     assert.equal(form.approval, true);
     assert.ok(form.title.length > 0 && form.title.length <= 120);
     const isMcp = c.method === "mcpServer/elicitation/request";
@@ -235,13 +233,12 @@ for (const c of cases)
       ...c.answer(dataForm),
       ...(isMcp ? { [form.fields[0].name]: "Accept" } : {}),
     };
-    const answered = await f.root.call("form_respond", {
-      formID,
-      expectedRevision: form.revision,
+    const answered = await f.root.call("work_answer", {
+      askID: formID,
       answers,
     });
     assert.ok(answered.state === "done");
-    assert.ok(Object.hasOwn(Form.parse(answered.value).responses, f.hub.rootId));
+    assert.ok(Object.hasOwn(askIn(answered.value, formID).responses, f.hub.rootId));
     release.resolve();
     await f.routed();
     assert.deepEqual(f.answers, [{ id: "fixture-request", response: c.expected }]);
@@ -256,9 +253,7 @@ for (const c of cases)
       ).valid,
       true,
     );
-    const resolved = await f.root.call("form_get", { formID });
-    assert.ok(resolved.state === "done");
-    assert.equal(Form.parse(resolved.value).status, "resolved");
+    assert.equal((await readAsk(f.root, formID)).status, "resolved");
   });
 
 const unsupportedCases: { name: string; method: string; params: any; diagnostic: RegExp }[] = [
@@ -448,9 +443,9 @@ for (const c of unsupportedCases)
       f.actor.checkRequest("fixture-request"),
       /no bound ask.*native input owner/,
     );
-    const forms = await f.root.call("form_list", { requesterID: f.child.actor.id });
-    assert.ok(forms.state === "done");
-    assert.deepEqual(BUILTINS.form_list.response.parse(forms.value).items, []);
+    const work = await f.root.call("work_list", { ownerID: f.child.actor.id });
+    assert.ok(work.state === "done");
+    assert.deepEqual(BUILTINS.work_list.response.parse(work.value).items, [], "no Work, no ask");
     assert.equal(
       Object.values(f.bootstrap.approvals ?? {}).some((b) => b.answerAttempt),
       false,

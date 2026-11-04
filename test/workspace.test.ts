@@ -5,10 +5,38 @@ import { join } from "node:path";
 import test from "node:test";
 import { Work } from "@agentorg/cli/contract";
 import { ActorController } from "../src/actors/controller.js";
+import { nativeForm } from "../src/actors/forms.js";
 import { Fault } from "../src/management/schema.js";
-import { type Bootstrap, RuntimeStore } from "../src/runtime/index.js";
+import { type Bootstrap, hash, RuntimeStore } from "../src/runtime/index.js";
 import { at, attention, form, message } from "./workspace-fixtures.js";
 
+/** The Hub's work_answer, at the Team level. */
+const answering = {
+  name: "work_answer",
+  inputSchema: { type: "object" },
+  _meta: {
+    "agentorg/tool": {
+      id: "hub:work",
+      name: "work",
+      interface: "work_answer",
+      one_way: false,
+      long_running: false,
+      level: "team",
+    },
+  },
+};
+/** The Actor's most recently updated active Work, which a native prompt is asked on. */
+const active = Work.parse({
+  ticketID: "w-active",
+  requesterID: "actor",
+  ownerID: "actor",
+  title: "Build",
+  status: "active",
+  links: [],
+  createdAt: at,
+  revision: 1,
+  updatedAt: at,
+});
 const settle = async () => {
   for (let i = 0; i < 12; i++) await new Promise(setImmediate);
 };
@@ -53,6 +81,7 @@ function fixture(t: any) {
   actor.hub = {
     connection: { connected: true },
     alias: (_: string, name: string) => name,
+    tools: [answering],
     close: async () => {},
   } as any;
   const event = (method: string, params: any = {}, id?: string) =>
@@ -120,7 +149,7 @@ test("attention receipts persist before the position; a failed save and restart 
     items.map((i) => `assigned:${i.recordID}:${at}`),
   );
   assert.ok(inputs.every((s) => s.state === "queued" && s.from === "manager"));
-  assert.match(inputs[0].text, /manager assigned you Work "w1" \(w1\)/);
+  assert.match(inputs[0].text, /manager gave you Work "w1" \(w1\)/);
   assert.equal(reopened.data.actors.actor.delivered, "3");
 });
 
@@ -186,25 +215,19 @@ test("an answer carries its ask and Work; the answer to a native request's appro
   };
   const answered = { answers: { approach: "freeze" }, note: "Go", at };
   (f.actor.hub as any).call = async (name: string, args: any) => {
-    if (name === "work_get")
+    assert.equal(name, "work_get");
+    // An ask from before asks on Work comes alone; one on Work comes with its Work.
+    if (args.askID === "own")
       return ok(
-        Work.parse({
-          ticketID: "w1",
-          requesterID: "actor",
-          ownerID: "actor",
-          title: "Switch to v2",
-          status: "active",
-          links: [],
-          createdAt: at,
-          revision: 1,
-          updatedAt: at,
-        }),
+        form({ title: "Grant?", fields }, { formID: "own", responses: { manager: answered } }),
       );
-    assert.equal(name, "form_get");
     return ok(
-      args.formID === "own"
-        ? form({ title: "Grant?", fields }, { formID: "own", responses: { manager: answered } })
-        : form(
+      Work.parse({
+        ...active,
+        ticketID: "w1",
+        title: "Switch to v2",
+        asks: [
+          form(
             { title: "Freeze?", fields: [{ name: "approach", label: "Approach", required: true }] },
             {
               formID: "other",
@@ -214,6 +237,8 @@ test("an answer carries its ask and Work; the answer to a native request's appro
               responses: { manager: answered },
             },
           ),
+        ],
+      }),
     );
   };
   for (const recordID of ["own", "other"])
@@ -227,7 +252,7 @@ test("an answer carries its ask and Work; the answer to a native request's appro
   );
   assert.equal(
     f.bootstrap.submissions[0].text,
-    'manager answered your ask "Freeze?" (other): approach: freeze. Note: Go Apply it, then update "Switch to v2" (w1). The ask records the answer; it is resolved.',
+    'manager answered your ask "Freeze?" (other): approach: freeze. Note: Go. Apply it, then update "Switch to v2" (w1). The ask records the answer; it is resolved.',
   );
 });
 
@@ -288,19 +313,23 @@ test("an approval ask binds the exact native scope; one manager answer has one d
     reads = 0;
   (f.actor.hub as any).call = async (name: string, args: any) => {
     noTeam(name);
-    if (name === "form_create") {
-      created = form(args, answer(args.fields[0].name));
-      return { structuredContent: created };
+    if (name === "work_list") {
+      assert.deepEqual(args, { ownerID: "actor", status: ["active"], order: "recent", limit: 1 });
+      return ok({ items: [active], next: null, actors: {} });
     }
-    assert.equal(name, "form_get");
-    assert.deepEqual(args, { formID: created.formID });
+    if (name === "work_update") {
+      created = form(args.ask, { workID: args.ticketID, ...answer(args.ask.fields[0].name) });
+      return ok(created);
+    }
+    assert.equal(name, "work_get");
+    assert.deepEqual(args, { askID: created.formID });
     reads++;
-    return { structuredContent: created };
+    return ok({ ...active, asks: [created] });
   };
   f.request();
   await settle();
   assert.equal(created.approval, true);
-  assert.equal(created.workID, undefined);
+  assert.equal(created.workID, "w-active", "asked on the Actor's most recent active Work");
   assert.equal(created.title, "Grant Codex network access for this turn?");
   assert.match(created.context, /Requested scope: \{"network":\{"enabled":true\}\}/);
   assert.match(created.fields[0].name, /field_[a-f0-9]{64}_0/);
@@ -326,6 +355,7 @@ test("an approval ask binds the exact native scope; one manager answer has one d
 for (const invalid of [
   "requester",
   "approval",
+  "work",
   "fields",
   "closed",
   "terminal",
@@ -338,14 +368,16 @@ for (const invalid of [
     let created: any;
     (f.actor.hub as any).call = async (name: string, args: any) => {
       noTeam(name);
-      if (name === "form_create") {
-        created = form(args);
-        return { structuredContent: created };
+      if (name === "work_list") return ok({ items: [active], next: null, actors: {} });
+      if (name === "work_update") {
+        created = form(args.ask, { workID: args.ticketID });
+        return ok(created);
       }
-      assert.equal(name, "form_get");
+      assert.equal(name, "work_get");
       const answered = { ...created, ...answer(created.fields[0].name) };
       if (invalid === "requester") answered.requesterID = "other";
       if (invalid === "approval") answered.approval = false;
+      if (invalid === "work") answered.workID = "other-work";
       if (invalid === "fields")
         answered.fields = [{ name: "fake", label: "fake", required: false }];
       if (invalid === "closed") {
@@ -357,7 +389,7 @@ for (const invalid of [
         f.event("turn/completed", { turn: { id: "turn", status: "completed", items: [] } });
       if (invalid === "session") (f.actor as any).sessionId = "replacement";
       if (invalid === "desktop") f.bootstrap.config.approvalAuthority = "desktop";
-      return { structuredContent: answered };
+      return ok({ ...active, asks: [answered] });
     };
     f.request();
     await settle();
@@ -372,32 +404,22 @@ test("lost ask issuance recovers one exact requester's ask, never reissues or re
     reads = false;
   const call = async (name: string, args: any): Promise<any> => {
     noTeam(name);
-    if (name === "form_create") {
+    if (name === "work_list") return ok({ items: [active], next: null, actors: {} });
+    if (name === "work_update") {
       creates++;
-      created = form(args, answer(args.fields[0].name));
+      created = form(args.ask, { workID: args.ticketID, ...answer(args.ask.fields[0].name) });
       throw new Error("lost creation reply");
     }
-    if (name === "form_list") {
-      assert.equal(args.requesterID, "actor");
-      if (!reads) throw new Error("held read unavailable");
-      return {
-        structuredContent: {
-          items: args.after
-            ? []
-            : [
-                form(
-                  { title: "Other", fields: [{ name: "x", label: "x", required: false }] },
-                  { formID: "x" },
-                ),
-                created,
-              ],
-          next: args.after ? null : "page-2",
-          actors: {},
-        },
-      };
-    }
-    assert.equal(name, "form_get");
-    return { structuredContent: created };
+    assert.equal(name, "work_get");
+    if (args.askID !== undefined) return ok({ ...active, asks: [created] });
+    // Issuance is recovered through the bound Work's asks.
+    assert.deepEqual(args, { ticketID: "w-active" });
+    if (!reads) throw new Error("held read unavailable");
+    const other = form(
+      { title: "Other", fields: [{ name: "x", label: "x", required: false }] },
+      { formID: "x", workID: "w-active" },
+    );
+    return ok({ ...active, asks: [other, created] });
   };
   (f.actor.hub as any).call = call;
   f.request();
@@ -489,19 +511,18 @@ for (const matches of [0, 2])
       creates = 0;
     (f.actor.hub as any).call = async (name: string, args: any) => {
       noTeam(name);
-      if (name === "form_create") {
+      if (name === "work_list") return ok({ items: [active], next: null, actors: {} });
+      if (name === "work_update") {
         creates++;
-        created = form(args);
+        created = form(args.ask, { workID: args.ticketID });
         throw new Error("unknown create outcome");
       }
-      assert.equal(name, "form_list");
-      return {
-        structuredContent: {
-          items: Array.from({ length: matches }, (_, n) => ({ ...created, formID: `form-${n}` })),
-          next: null,
-          actors: {},
-        },
-      };
+      assert.equal(name, "work_get");
+      assert.deepEqual(args, { ticketID: "w-active" });
+      return ok({
+        ...active,
+        asks: Array.from({ length: matches }, (_, n) => ({ ...created, formID: `form-${n}` })),
+      });
     };
     f.request();
     await settle();
@@ -511,3 +532,163 @@ for (const matches of [0, 2])
     assert.equal(f.answers.length, 0);
     assert.match(f.actor.lastError ?? "", matches ? /Multiple asks/ : /issuance is uncertain/);
   });
+
+for (const level of [undefined, "team", "report"] as const)
+  test(`each item is framed with what to do at ${level ?? "no"} level, naming work_answer only where presented`, async (t) => {
+    const f = fixture(t);
+    if (level) f.bootstrap.config.level = level;
+    const fields = [{ name: "field_native_0", label: "Decision", required: true }];
+    f.bootstrap.approvals = {
+      native: {
+        requestId: "r",
+        threadId: "thread",
+        turnId: "turn",
+        method: "m",
+        fields,
+        state: "waiting",
+      },
+    };
+    const which = form(
+      { title: "Which?", fields: [{ name: "choice", label: "Choose", required: true }] },
+      { formID: "raised", approval: false, workID: "w-active" },
+    );
+    (f.actor.hub as any).call = async (name: string, args: any) => {
+      assert.equal(name, "work_get");
+      if (args.askID === "raised") return ok({ ...active, asks: [which] });
+      // The executor's own approval ask, on the Actor's Work, answered and raised.
+      if (args.askID === "own")
+        return ok({
+          ...active,
+          asks: [form({ title: "Grant?", fields }, { formID: "own", workID: "w-active" })],
+        });
+      // Work the Actor requested of its report, and Work its manager gave it.
+      if (args.ticketID === "w2")
+        return ok({
+          ...active,
+          ticketID: "w2",
+          ownerID: "report",
+          status: "submitted",
+          submission: { submissionID: "s2", ownerID: "report", result: "Done", evidence: [], at },
+        });
+      // A submission the manager's close of its requester re-routed to the Actor.
+      if (args.ticketID === "w6")
+        return ok({
+          ...active,
+          ticketID: "w6",
+          ownerID: "report",
+          status: "submitted",
+          submission: { submissionID: "s6", ownerID: "report", result: "Done", evidence: [], at },
+        });
+      const given = { ...active, requesterID: "manager" };
+      if (args.ticketID === "w3") return ok({ ...given, ticketID: "w3", status: "cancelled" });
+      assert.deepEqual(args, { ticketID: "w-active" });
+      return ok(given);
+    };
+    const items = attention("1", [
+      { kind: "ask", recordID: "a1", from: "report", title: "Delete the bucket?" },
+      { kind: "review_due", recordID: "w2", from: "report", title: "Prove the backups" },
+      { kind: "review_due", recordID: "w6", title: "Restore drill" },
+      { kind: "raised", recordID: "raised", title: "Which?" },
+      { kind: "raised", recordID: "own", title: "Grant?" },
+      { kind: "answer", recordID: "own", title: "Grant?" },
+      { kind: "updated", recordID: "w-active", title: "Build" },
+      { kind: "updated", recordID: "w3", title: "Old plan" },
+      { kind: "assigned", recordID: "w4", title: "Index it" },
+      { kind: "reviewed", recordID: "w5", title: "Migrate" },
+    ]).items;
+    for (const item of items) await (f.actor as any).deliver(f.actor.hub, item);
+    const answering = level !== "report";
+    assert.deepEqual(
+      f.bootstrap.submissions.map((s) => s.text),
+      [
+        answering
+          ? 'report routes you the ask "Delete the bucket?" (a1). Read it with work_get {askID: "a1"}, then answer it with work_answer {askID, answers, note?}, or raise it one manager up with work_answer {askID, raise: true}.'
+          : 'report routes you the ask "Delete the bucket?" (a1). Read it with work_get {askID: "a1"}.',
+        answering
+          ? 'report submitted "Prove the backups" (w2) for your answer. Read the submission with work_get, then answer it with work_answer {askID: "s2", answers: {verdict: "accepted" or "changes_requested"}, note?}; requesting changes needs the note.'
+          : 'report submitted "Prove the backups" (w2) for your answer. Read the submission with work_get.',
+        answering
+          ? 'manager closed the Actor the submission of "Restore drill" (w6) waited on; it now waits for your answer. Read the submission with work_get, then answer it with work_answer {askID: "s6", answers: {verdict: "accepted" or "changes_requested"}, note?}; requesting changes needs the note.'
+          : 'manager closed the Actor the submission of "Restore drill" (w6) waited on; it now waits for your answer. Read the submission with work_get.',
+        'manager raised your ask "Which?" (raised) to its manager; it stays open until someone answers it. Keep working on what doesn\'t depend on it.',
+        'manager changed your Work "Build" (w-active). Read it with work_get before your next write to it.',
+        'manager cancelled your Work "Old plan" (w3); its open asks are cancelled. Stop working on it.',
+        'manager gave you Work "Index it" (w4). Read it with work_get; set it active with work_update when you start.',
+        'manager answered your submission of "Migrate" (w5). Read the answer with work_get; on requested changes, address them and submit again.',
+      ],
+      "a native request's approval ask, answered or raised, is the request's, not input",
+    );
+  });
+
+test("a binding from before asks on Work with an uncertain issuance stays pending without reading Work", async (t) => {
+  const f = fixture(t);
+  await f.ready();
+  let creates = 0,
+    recoveries = 0;
+  (f.actor.hub as any).call = async (name: string, _args: any) => {
+    noTeam(name);
+    if (name === "work_list") return ok({ items: [active], next: null, actors: {} });
+    if (name === "work_update") {
+      creates++;
+      throw new Error("unknown create outcome");
+    }
+    assert.equal(name, "work_get");
+    recoveries++;
+    return ok({ ...active, asks: [] });
+  };
+  f.request();
+  await settle();
+  assert.equal(recoveries, 1);
+  const binding = Object.values(f.bootstrap.approvals ?? {})[0];
+  assert.equal(binding.formId, null);
+  delete binding.ticketId;
+  f.store.save();
+  f.request();
+  await settle();
+  assert.equal(creates, 1);
+  assert.equal(recoveries, 1, "no Work names the old binding's ask");
+  assert.equal(f.answers.length, 0);
+  assert.match(f.actor.lastError ?? "", /issuance is uncertain/);
+});
+
+test("an ask issued before asks on Work keeps its binding and is answered through its bare Form", async (t) => {
+  const f = fixture(t);
+  await f.ready();
+  // The binding exactly as an earlier executor kept it: an ask ID, and no Work.
+  const method = "item/permissions/requestApproval";
+  const params = {
+    threadId: "thread",
+    turnId: "turn",
+    permissions: { network: { enabled: true } },
+  };
+  const key = hash(JSON.stringify(["thread", "session", "turn", "request"]));
+  const projection = nativeForm(method, params, hash(JSON.stringify([key, method, params])));
+  f.bootstrap.approvals = {
+    [key]: {
+      requestId: "request",
+      threadId: "thread",
+      turnId: "turn",
+      method,
+      sessionId: "session",
+      inputIds: [],
+      fields: projection.ask.fields,
+      formId: "legacy",
+      state: "waiting",
+    },
+  };
+  const legacy = form(projection.ask, {
+    formID: "legacy",
+    ...answer(projection.ask.fields[0].name),
+  });
+  (f.actor.hub as any).call = async (name: string, args: any) => {
+    assert.equal(name, "work_get", "no Work is chosen for an ask already issued");
+    assert.deepEqual(args, { askID: "legacy" });
+    return ok(legacy);
+  };
+  f.request();
+  await settle();
+  assert.deepEqual(f.answers, [
+    { id: "request", response: { permissions: { network: { enabled: true } }, scope: "turn" } },
+  ]);
+  assert.equal(f.bootstrap.threadWork, undefined);
+});

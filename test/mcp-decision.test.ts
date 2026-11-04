@@ -1,9 +1,8 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
-import { Form } from "@agentorg/cli/contract";
 import { AjvJsonSchemaValidator } from "@modelcontextprotocol/sdk/validation/ajv-provider.js";
-import { deferred, nativeFormFixture } from "./native-form-fixture.js";
+import { deferred, nativeFormFixture, readAsk } from "./native-form-fixture.js";
 
 const params = {
   threadId: "fixture-thread",
@@ -44,17 +43,15 @@ for (const choice of ["Accept", "Decline", "Cancel"])
       const f = await nativeFormFixture(t),
         call = f.session.call.bind(f.session);
       f.session.call = async (name, args, timeout) => {
-        if (name === f.session.alias("hub:forms", "form_get")) {
-          requested.resolve(String(args.formID));
+        if (name === f.session.alias("hub:work", "work_get") && args.askID !== undefined) {
+          requested.resolve(String(args.askID));
           await release.promise;
         }
         return call(name, args, timeout);
       };
       f.event("mcpServer/elicitation/request", params, "fixture-request");
       const formID = await requested.promise;
-      const read = await f.root.call("form_get", { formID });
-      assert.ok(read.state === "done");
-      const form = Form.parse(read.value),
+      const form = await readAsk(f.root, formID),
         decision = form.fields[0],
         data = form.fields.slice(1);
       assert.equal(form.approval, true);
@@ -72,9 +69,8 @@ for (const choice of ["Accept", "Decline", "Cancel"])
         answers[data[1].name] = "No";
         answers[data[2].name] = "Beta";
       }
-      const responded = await f.root.call("form_respond", {
-        formID,
-        expectedRevision: form.revision,
+      const responded = await f.root.call("work_answer", {
+        askID: formID,
         answers,
       });
       assert.ok(responded.state === "done");
@@ -94,9 +90,7 @@ for (const choice of ["Accept", "Decline", "Cancel"])
       assert.deepEqual(f.answers, [{ id: "fixture-request", response }]);
       const binding = Object.values(f.bootstrap.approvals ?? {})[0];
       assert.deepEqual(binding.answerAttempt?.response, response);
-      const resolved = await f.root.call("form_get", { formID });
-      assert.ok(resolved.state === "done");
-      assert.equal(Form.parse(resolved.value).status, "resolved");
+      assert.equal((await readAsk(f.root, formID)).status, "resolved");
     });
 
 test("public ask validation keeps invalid MCP choices open for the manager", {
@@ -108,41 +102,36 @@ test("public ask validation keeps invalid MCP choices open for the manager", {
   const f = await nativeFormFixture(t),
     call = f.session.call.bind(f.session);
   f.session.call = async (name, args, timeout) => {
-    if (name === f.session.alias("hub:forms", "form_get")) {
-      requested.resolve(String(args.formID));
+    if (name === f.session.alias("hub:work", "work_get") && args.askID !== undefined) {
+      requested.resolve(String(args.askID));
       await release.promise;
     }
     return call(name, args, timeout);
   };
   f.event("mcpServer/elicitation/request", params, "fixture-request");
   const formID = await requested.promise;
-  const read = await f.root.call("form_get", { formID });
-  assert.ok(read.state === "done");
-  const form = Form.parse(read.value);
+  const form = await readAsk(f.root, formID);
   for (const answers of [
     {},
     { [form.fields[0].name]: "Accept", [form.fields[2].name]: "not a boolean" },
     { [form.fields[0].name]: "Accept", [form.fields[3].name]: "" },
   ]) {
-    const rejected = await f.root.call("form_respond", {
-      formID,
-      expectedRevision: form.revision,
+    const rejected = await f.root.call("work_answer", {
+      askID: formID,
       answers,
     });
     assert.notEqual(rejected.state, "done");
-    const unchanged = await f.root.call("form_get", { formID });
-    assert.ok(unchanged.state === "done");
-    assert.equal(Form.parse(unchanged.value).status, "open");
-    assert.equal(Object.hasOwn(Form.parse(unchanged.value).responses, f.hub.rootId), false);
+    const unchanged = await readAsk(f.root, formID);
+    assert.equal(unchanged.status, "open");
+    assert.equal(Object.hasOwn(unchanged.responses, f.hub.rootId), false);
     assert.equal(f.answers.length, 0);
     assert.equal(
       Object.values(f.bootstrap.approvals ?? {}).some((b) => b.answerAttempt),
       false,
     );
   }
-  const accepted = await f.root.call("form_respond", {
-    formID,
-    expectedRevision: form.revision,
+  const accepted = await f.root.call("work_answer", {
+    askID: formID,
     answers: { [form.fields[0].name]: "Accept" },
   });
   assert.ok(accepted.state === "done");
@@ -162,22 +151,17 @@ test("requester ask cancellation is not an MCP cancel response", {
   const f = await nativeFormFixture(t),
     call = f.session.call.bind(f.session);
   f.session.call = async (name, args, timeout) => {
-    if (name === f.session.alias("hub:forms", "form_get")) {
-      requested.resolve(String(args.formID));
+    if (name === f.session.alias("hub:work", "work_get") && args.askID !== undefined) {
+      requested.resolve(String(args.askID));
       await release.promise;
     }
     return call(name, args, timeout);
   };
   f.event("mcpServer/elicitation/request", params, "fixture-request");
   const formID = await requested.promise;
-  const read = await f.root.call("form_get", { formID });
-  assert.ok(read.state === "done");
-  const form = Form.parse(read.value);
-  const closed = await call(f.session.alias("hub:forms", "form_close"), {
-    formID,
-    expectedRevision: form.revision,
-    status: "cancelled",
-    resolution: "No input response",
+  const form = await readAsk(f.root, formID);
+  const closed = await call(f.session.alias("hub:work", "work_update"), {
+    close: { askID: form.formID, status: "cancelled", resolution: "No input response" },
   });
   assert.equal(!!closed.isError, false);
   release.resolve();

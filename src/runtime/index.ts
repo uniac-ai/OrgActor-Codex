@@ -44,6 +44,8 @@ export interface ApprovalBinding {
   turnId: string | null;
   method: string;
   sessionId?: string;
+  /** The Work the ask is on; a binding from before asks on Work has none. */
+  ticketId?: string;
   /** Null records an uncertain creation attempt; a missing field permits first issuance. */
   formId?: string | null;
   fields?: Form["fields"];
@@ -66,6 +68,8 @@ export interface Bootstrap {
   submissions: Submission[];
   /** The Hub `attention` position this executor has delivered through; the Hub keeps none. */
   delivered?: string;
+  /** The Work this executor opened for its thread's native prompts; null while its creation is uncertain. */
+  threadWork?: { threadId: string; ticketId: string | null };
   suspended?: number | "admission-rejected";
   approvals?: Record<string, ApprovalBinding>;
   startupFailure?: {
