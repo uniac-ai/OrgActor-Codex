@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { setTimeout } from "node:timers/promises";
+import { BUILTINS } from "@agentorg/cli/contract";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
@@ -486,9 +487,25 @@ test("the native session is offered its chosen level's Hub interfaces and the re
       requestInit: { headers: { Authorization: "Bearer OWNED_LEVEL_CAPABILITY" } },
     }),
   );
-  assert.match(client.getInstructions() ?? "", /You fill AgentOrg Actor actor\./);
-  assert.match(client.getInstructions() ?? "", /One Work per workstream: work_create/);
-  assert.match(client.getInstructions() ?? "", /recommended value/);
+  const guidance = client.getInstructions() ?? "";
+  assert.match(guidance, /You fill AgentOrg Actor actor\./);
+  assert.match(guidance, /One Work per workstream: work_create/);
+  assert.match(guidance, /recommended value/);
+  assert.match(
+    guidance,
+    /Can't move without someone\? Ask\. Held up outside the organization, or by other Work\? Stay active and say what it waits on with waitsOn\./,
+  );
+  assert.match(
+    guidance,
+    /You ask only on Work you own, and the ask's formID is the askID other tools take\./,
+  );
+  assert.match(guidance, /an approval ask on your most recently updated active Work/);
+  // Every tool the guidance names is one the Hub presents at the Report level.
+  const named = [...new Set(guidance.match(/\b[a-z]+_[a-z_]+\b/g))];
+  assert.ok(named.length > 0);
+  for (const name of named)
+    assert.equal((BUILTINS as Record<string, { level?: string }>)[name]?.level, "report", name);
+  assert.doesNotMatch(guidance, /set blocked/i);
   assert.deepEqual(
     (await client.listTools()).tools.map((t) => t.name),
     ["work_update", "message_send"],
