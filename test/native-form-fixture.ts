@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { connectClient } from "@agentorg/cli/actor";
-import { BUILTINS } from "@agentorg/cli/contract";
+import { BUILTINS, Form, Work } from "@agentorg/cli/contract";
 import { startPublicHub } from "../scripts/hub.js";
 import { ActorController } from "../src/actors/controller.js";
 import { ActorHubSession } from "../src/hub/actor.js";
@@ -15,6 +15,26 @@ export function deferred<T>() {
     resolve = r;
   });
   return { promise, resolve };
+}
+
+/** The ask `askID` from a Work | Form result: the Form itself, or that ask on the Work. */
+export function askIn(value: unknown, askID: string): Form {
+  const ask =
+    typeof value === "object" && value !== null && "formID" in value
+      ? Form.parse(value)
+      : Work.parse(value).asks?.find((each) => each.formID === askID);
+  assert.ok(ask, `no ask ${askID}`);
+  return ask;
+}
+
+/** The ask `askID` on its Work, as `reader` reads it. */
+export async function readAsk(
+  reader: Awaited<ReturnType<typeof connectClient>>,
+  askID: string,
+): Promise<Form> {
+  const read = await reader.call("work_get", { askID });
+  assert.ok(read.state === "done");
+  return askIn(read.value, askID);
 }
 
 /** Real public Hub/Actor SDK with synthetic native history and request delivery. */

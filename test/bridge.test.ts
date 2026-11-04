@@ -460,8 +460,9 @@ test("the native session is offered its chosen level's Hub interfaces and the re
     },
   });
   const tools = [
-    tool("hub:status", "status_set", "report"),
-    tool("hub:messages", "message_send", "team"),
+    tool("hub:work", "work_update", "report"),
+    tool("hub:messages", "message_send", "report"),
+    tool("hub:team", "team", "team"),
     tool("hub:actors", "actor_close", "organization"),
     tool("hub:legacy", "untagged"),
   ];
@@ -490,18 +491,18 @@ test("the native session is offered its chosen level's Hub interfaces and the re
   assert.match(client.getInstructions() ?? "", /recommended value/);
   assert.deepEqual(
     (await client.listTools()).tools.map((t) => t.name),
-    ["status_set"],
+    ["work_update", "message_send"],
   );
   await assert.rejects(
-    client.callTool({ name: "message_send", arguments: {}, _meta: { threadId: "thread" } }),
+    client.callTool({ name: "team", arguments: {}, _meta: { threadId: "thread" } }),
     /no such interface/,
   );
   bootstrap.config = { approvalAuthority: "desktop", level: "team" } as any;
   assert.deepEqual(
     (await client.listTools()).tools.map((t) => t.name),
-    ["status_set", "message_send"],
+    ["work_update", "message_send", "team"],
   );
   delete (bootstrap.config as { level?: string }).level;
-  assert.equal((await client.listTools()).tools.length, 4);
+  assert.equal((await client.listTools()).tools.length, 5);
   assert.equal(dispatches, 0);
 });

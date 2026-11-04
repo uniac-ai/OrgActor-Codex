@@ -12,6 +12,7 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import { WebSocketServer } from "ws";
 import { startPublicHub } from "../scripts/hub.js";
 import { startServer } from "../src/server/index.js";
+import { readAsk } from "./native-form-fixture.js";
 
 async function until(read: () => boolean) {
   for (let i = 0; i < 500; i++) {
@@ -76,7 +77,7 @@ for (const delayed of ["item", "turn-and-item"])
               }),
             );
             const list = await mcp.listTools();
-            assert.equal(list.tools.length, 30);
+            assert.equal(list.tools.length, 21);
             assert.equal(
               list.tools.find((tool) => tool.name === "team")?.description,
               state.teamDescription,
@@ -210,7 +211,7 @@ for (const delayed of ["item", "turn-and-item"])
     await runtime.provider.setEnabled(true);
     await until(() => runtime.provider.snapshot().connected);
     const publicTools = await root.available();
-    assert.equal(publicTools.length, 11);
+    assert.equal(publicTools.length, 8);
     state.teamDescription = publicTools
       .find((tool) => tool.id === "hub:team")
       ?.interfaces.find((offer) => offer.interface.name === "team")?.interface.description;
@@ -236,7 +237,7 @@ for (const delayed of ["item", "turn-and-item"])
       assert.deepEqual(Object.keys(refused).sort(), ["state", "code", "message"].sort());
     }
     assert.equal(state.nativeStarts, 0);
-    assert.equal((await root.available()).flatMap((tool) => tool.interfaces).length, 30);
+    assert.equal((await root.available()).flatMap((tool) => tool.interfaces).length, 21);
     for (const name of [
       "messages",
       "message_read",
@@ -298,9 +299,9 @@ for (const delayed of ["item", "turn-and-item"])
     assert.ok(actor.hub);
     const call = actor.hub.call.bind(actor.hub);
     actor.hub.call = async (name, args, timeout) => {
-      if (name === "form_list")
-        assert.fail("A known private Form must not scan organization Forms");
-      if (name === "form_get") formReads.push(String(args.formID));
+      if (name === "work_get" && args.ticketID !== undefined)
+        assert.fail("A known ask is read by its askID, not recovered through its Work");
+      if (name === "work_get") formReads.push(String(args.askID));
       return call(name, args, timeout);
     };
     const socket = [...native.clients][0];
@@ -334,10 +335,9 @@ for (const delayed of ["item", "turn-and-item"])
     );
     await until(() => Object.values(actor.bootstrap.approvals ?? {}).some((b) => !!b.formId));
     const binding = Object.values(actor.bootstrap.approvals ?? {})[0];
-    const shared = await outsider.call("form_get", { formID: binding.formId });
-    assert.ok(shared.state === "done");
-    const nativeForm = BUILTINS.form_get.response.parse(shared.value);
-    assert.equal(nativeForm.workID, undefined);
+    assert.ok(binding.formId);
+    const nativeForm = await readAsk(outsider, binding.formId);
+    assert.equal(nativeForm.workID, actor.bootstrap.threadWork?.ticketId);
     assert.equal(nativeForm.requesterID, actor.bootstrap.actorId);
     assert.equal(nativeForm.approval, true);
     assert.equal(nativeForm.title, "Proceed?");
@@ -350,42 +350,22 @@ for (const delayed of ["item", "turn-and-item"])
     );
     const answers = { [nativeForm.fields[0].name]: "yes" };
     assert.equal(
-      (
-        await outsider.call("form_respond", {
-          formID: nativeForm.formID,
-          expectedRevision: nativeForm.revision,
-          answers,
-        })
-      ).state,
+      (await outsider.call("work_answer", { askID: nativeForm.formID, answers })).state,
       "refused",
     );
+    const closed = await root.call("work_update", {
+      close: { askID: nativeForm.formID, status: "resolved", resolution: "approve" },
+    });
+    assert.ok(closed.state === "refused");
+    assert.equal(closed.code, "forbidden", "only the asker closes its ask");
     assert.equal(
-      (
-        await root.call("form_close", {
-          formID: nativeForm.formID,
-          expectedRevision: nativeForm.revision,
-          status: "resolved",
-          resolution: "approve",
-        })
-      ).state,
-      "refused",
-    );
-    assert.equal(
-      (
-        await root.call("form_respond", {
-          formID: nativeForm.formID,
-          expectedRevision: nativeForm.revision,
-          answers,
-        })
-      ).state,
+      (await root.call("work_answer", { askID: nativeForm.formID, answers })).state,
       "done",
     );
     await until(() => state.answers.length === 1);
     assert.deepEqual(state.answers, [{ answers: { "native-choice-id": { answers: ["yes"] } } }]);
     assert.ok(formReads.length > 0 && formReads.every((id) => id === nativeForm.formID));
     assert.ok(binding.answerAttempt);
-    const resolved = await root.call("form_get", { formID: nativeForm.formID });
-    assert.ok(resolved.state === "done");
-    assert.equal(BUILTINS.form_get.response.parse(resolved.value).status, "resolved");
+    assert.equal((await readAsk(root, nativeForm.formID)).status, "resolved");
     assert.equal(actor.bootstrap.submissions.length, 1);
   });

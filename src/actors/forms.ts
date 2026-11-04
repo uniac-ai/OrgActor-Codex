@@ -52,7 +52,9 @@ export function nativeForm(method: string, params: any, reference: string) {
     fields: Form["fields"],
     respond: (answers: Record<string, string>) => object,
   ) => {
-    const parsed = BUILTINS.form_create.request.safeParse({ ...ask, approval: true, fields });
+    const parsed = BUILTINS.work_update.request.shape.ask
+      .unwrap()
+      .safeParse({ ...ask, approval: true, fields });
     if (!parsed.success) {
       const issue = parsed.error.issues[0];
       return unsupported(`Form.${issue.path.join(".")}: ${issue.message}.`);
@@ -265,7 +267,8 @@ export function nativeForm(method: string, params: any, reference: string) {
                 `requestedSchema.properties.${key}.${"enumNames" in property && property.enumNames ? "enumNames" : "enum"}`,
               )
             : undefined;
-      const maximumAnswerLength = BUILTINS.form_respond.request.shape.answers.valueType.maxLength;
+      const maximumAnswerLength =
+        BUILTINS.work_answer.request.shape.answers.unwrap().valueType.maxLength;
       if (
         "minLength" in property &&
         property.minLength !== undefined &&

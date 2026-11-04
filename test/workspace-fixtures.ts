@@ -21,6 +21,7 @@ export const form = (input: Pick<Form, "title" | "fields">, extra: Partial<Form>
     createdAt: at,
     status: "open",
     responses: {},
+    raises: [],
     revision: 1,
     updatedAt: at,
     ...input,
@@ -39,6 +40,6 @@ export const attention = (
       title,
       at,
     })),
-    changed: { actorIDs: [], workIDs: [], formIDs: [] },
+    changed: { actorIDs: [], workIDs: [], conversationIDs: [] },
     next,
   });
