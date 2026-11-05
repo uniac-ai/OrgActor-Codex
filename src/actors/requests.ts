@@ -1,6 +1,7 @@
 import { AjvJsonSchemaValidator } from "@modelcontextprotocol/sdk/validation/ajv-provider.js";
 import { z } from "zod";
 import { Fault } from "../management/schema.js";
+import type { RuntimeStore } from "../runtime/index.js";
 
 export const supportedRequests = new Set([
   "item/commandExecution/requestApproval",
@@ -9,6 +10,21 @@ export const supportedRequests = new Set([
   "item/tool/requestUserInput",
   "mcpServer/elicitation/request",
 ]);
+/**
+ * Who answers native requests now. Desktop answers only once the operator confirmed it for the
+ * current setup revision; until then requests become Hub approval asks.
+ */
+export function effectiveAuthority(
+  configured: "desktop" | "hub",
+  data: RuntimeStore["data"],
+): "desktop" | "hub" {
+  const desktop = data.probes.desktop;
+  return configured === "desktop" &&
+    desktop?.state === "ready" &&
+    desktop.revision === data.revision
+    ? "desktop"
+    : "hub";
+}
 export function requestedPermissions(params: any): object {
   return {
     ...(params.permissions?.network ? { network: params.permissions.network } : {}),

@@ -1,5 +1,6 @@
 import { Hono } from "hono";
 import { z } from "zod";
+import { effectiveAuthority } from "../actors/requests.js";
 import type { ActorSupervisor } from "../actors/supervisor.js";
 import type { CodexProvider } from "../provider/index.js";
 import type { RuntimeStore } from "../runtime/index.js";
@@ -63,6 +64,7 @@ export function management(
             turnId: null,
             queued: b.submissions.filter((s) => s.state === "queued").length,
             approvalAuthority: b.config.approvalAuthority,
+            effectiveApprovalAuthority: effectiveAuthority(b.config.approvalAuthority, store.data),
             requests: [],
             output: "",
           },

@@ -133,6 +133,7 @@ test("operator controls use actor-scoped API routes and separate interrupt from 
       turnId: active,
       queued,
       approvalAuthority: pendingForm ? "hub" : "desktop",
+      effectiveApprovalAuthority: pendingForm ? "hub" : "desktop",
       requests: pendingForm
         ? [
             {

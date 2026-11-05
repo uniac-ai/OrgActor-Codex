@@ -100,11 +100,20 @@ function fixture(t: any) {
       { permissions: { network: { enabled: true } } },
       "request",
     );
+  /** The operator's Desktop confirmation for the current setup revision. */
+  const confirm = () => {
+    store.data.probes.desktop = {
+      state: "ready",
+      code: "OPERATOR_CONFIRMED_DESKTOP",
+      revision: store.data.revision,
+      checkedAt: at,
+    };
+  };
   t.after(async () => {
     await actor.close();
     rmSync(root, { recursive: true, force: true });
   });
-  return { root, store, bootstrap, actor, adapter, event, ready, request, answers };
+  return { root, store, bootstrap, actor, adapter, event, ready, request, answers, confirm };
 }
 
 const ok = (structuredContent: object) => ({ structuredContent });
@@ -177,6 +186,7 @@ test("a missing position starts at the Hub's current one, and one the Hub never 
 test("input steers a running turn, and starts the next turn when the turn waits on a native request or refuses", async (t) => {
   const f = fixture(t);
   f.bootstrap.config.approvalAuthority = "desktop";
+  f.confirm();
   await f.ready();
   const deliver = (recordID: string) =>
     (f.actor as any).deliver(
@@ -388,12 +398,46 @@ for (const invalid of [
       if (invalid === "terminal")
         f.event("turn/completed", { turn: { id: "turn", status: "completed", items: [] } });
       if (invalid === "session") (f.actor as any).sessionId = "replacement";
-      if (invalid === "desktop") f.bootstrap.config.approvalAuthority = "desktop";
+      if (invalid === "desktop") {
+        f.bootstrap.config.approvalAuthority = "desktop";
+        f.confirm();
+      }
       return ok({ ...active, asks: [answered] });
     };
     f.request();
     await settle();
     assert.equal(f.answers.length, 0);
+  });
+
+for (const desktop of ["unconfirmed", "confirmed", "stale"] as const)
+  test(`desktop authority with ${desktop} Desktop ${desktop === "confirmed" ? "leaves the request to Desktop" : "asks the Actor's managers"}`, async (t) => {
+    const f = fixture(t);
+    f.bootstrap.config.approvalAuthority = "desktop";
+    if (desktop !== "unconfirmed") f.confirm();
+    if (desktop === "stale") f.store.data.revision++;
+    await f.ready();
+    const calls: string[] = [];
+    let created: any;
+    (f.actor.hub as any).call = async (name: string, args: any) => {
+      calls.push(name);
+      if (name === "work_list") return ok({ items: [active], next: null, actors: {} });
+      if (name === "work_update") {
+        created = form(args.ask, { workID: args.ticketID });
+        return ok(created);
+      }
+      return ok({ ...active, asks: [created] });
+    };
+    f.request();
+    await settle();
+    const confirmed = desktop === "confirmed";
+    assert.equal(f.actor.snapshot().effectiveApprovalAuthority, confirmed ? "desktop" : "hub");
+    assert.equal(calls.includes("work_update"), !confirmed);
+    await assert.rejects(
+      f.actor.checkRequest("request"),
+      (e: any) =>
+        e.code === "ANSWER_AT_OWNER" &&
+        (e.message === "Answer this request in Codex Desktop.") === confirmed,
+    );
   });
 
 test("lost ask issuance recovers one exact requester's ask, never reissues or resends an uncertain answer after restart", async (t) => {

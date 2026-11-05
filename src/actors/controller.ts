@@ -8,7 +8,7 @@ import { catalogOf, presents } from "../hub/catalog.js";
 import { type ActorSnapshot, Fault } from "../management/schema.js";
 import { type Bootstrap, hash, type RuntimeStore, type Submission } from "../runtime/index.js";
 import { nativeForm } from "./forms.js";
-import { supportedRequests } from "./requests.js";
+import { effectiveAuthority, supportedRequests } from "./requests.js";
 
 type PendingRequest = { id: string | number; method: string; params: any };
 type Attention = ReturnType<typeof BUILTINS.attention.response.parse>;
@@ -67,6 +67,7 @@ export class ActorController extends EventEmitter {
       turnId: this.turnId,
       queued: this.bootstrap.submissions.filter((s) => s.state === "queued").length,
       approvalAuthority: this.bootstrap.config.approvalAuthority,
+      effectiveApprovalAuthority: this.authority(),
       requests: [...this.requests].map(([id, r]) => ({
         id,
         method: r.method,
@@ -476,9 +477,11 @@ export class ActorController extends EventEmitter {
         binding.state = "resolved";
     this.store.save();
   }
+  private authority(): "desktop" | "hub" {
+    return effectiveAuthority(this.bootstrap.config.approvalAuthority, this.store.data);
+  }
   private routeApprovals(): void {
-    if (this.bootstrap.config.approvalAuthority !== "hub" || !this.sessionId || this.reading)
-      return;
+    if (this.authority() !== "hub" || !this.sessionId || this.reading) return;
     for (const id of this.requests.keys()) {
       if (this.routing.has(id)) continue;
       this.routing.add(id);
@@ -522,7 +525,7 @@ export class ActorController extends EventEmitter {
       this.requests.get(id) === request &&
       request.params.turnId === this.turnId &&
       !this.completedTurns.has(request.params.turnId) &&
-      this.bootstrap.config.approvalAuthority === "hub";
+      this.authority() === "hub";
     if (!currentRequest()) return;
     this.bootstrap.approvals ??= {};
     const key = hash(
@@ -789,7 +792,7 @@ export class ActorController extends EventEmitter {
     );
     throw new Fault(
       "ANSWER_AT_OWNER",
-      this.bootstrap.config.approvalAuthority === "desktop"
+      this.authority() === "desktop"
         ? "Answer this request in Codex Desktop."
         : bound
           ? "Answer the matching approval ask as one of this Actor's managers."

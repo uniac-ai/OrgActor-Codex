@@ -82,6 +82,8 @@ export interface ActorSnapshot {
   turnId: string | null;
   queued: number;
   approvalAuthority: "desktop" | "hub";
+  /** Who answers native requests now: `hub` until Desktop is confirmed for this setup. */
+  effectiveApprovalAuthority: "desktop" | "hub";
   requests: { id: string; method: string; turnId: string | null; summary: string }[];
   lastError?: string;
   output: string;

@@ -368,7 +368,14 @@ function ActorsView(p: ActorsFeature) {
               </CardDescription>
             </CardHeader>
             <CardContent className="stack">
-              <Field label="Approval owner">
+              <Field
+                label="Approval owner"
+                help={
+                  actor.approvalAuthority !== actor.effectiveApprovalAuthority
+                    ? "Hub managers answer until Codex Desktop is confirmed in Setup."
+                    : undefined
+                }
+              >
                 <Select
                   value={actor.approvalAuthority}
                   disabled={p.busy || !!actor.requests.length}
@@ -403,7 +410,7 @@ function ActorsView(p: ActorsFeature) {
                   <strong>{r.summary}</strong>
                   <p>
                     Answer in{" "}
-                    {actor.approvalAuthority === "desktop"
+                    {actor.effectiveApprovalAuthority === "desktop"
                       ? "Codex Desktop"
                       : "its AgentOrg approval ask, as one of this Actor's managers, when one is bound; otherwise follow the native input recovery notice"}
                     .
