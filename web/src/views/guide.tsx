@@ -96,6 +96,8 @@ function fact(step: GuideStep): string {
       return "Its .codex/config.toml connects AgentOrg's Codex adapter as mcp_servers.org, the name this Actor's tools use.";
     case "FOLDER_NOT_IN_DESKTOP":
       return `Desktop has no project for ${d.path} on this-mac.`;
+    case "DESKTOP_PROJECTS_UNKNOWN":
+      return `This console can't tell whether Desktop has ${d.path} as a project on this-mac: Desktop's project records at ${d.state} are missing or in a form it doesn't read.`;
     case "FOLDER_LOCAL_PROJECT":
       return `Desktop has ${d.path} as the local project ${d.project}, not as a project on this-mac, where the Actor's session runs.`;
     case "PREFLIGHT_REFUSED":
@@ -345,6 +347,7 @@ function StepBody(p: GuideFeature & { step: GuideStep }) {
       break;
     case "FOLDER_NOT_IN_DESKTOP":
     case "FOLDER_LOCAL_PROJECT":
+    case "DESKTOP_PROJECTS_UNKNOWN":
       body = (
         <>
           <Person

@@ -205,6 +205,13 @@ export class GuideService {
     if (!adapter) return missing("DESKTOP_NOT_CONNECTED", { alias: ALIAS });
     const revision = this.store.data.revision;
     const project = desktopProject(this.mac.desktopState, root);
+    // Desktop's own records are private and may change with any update; unread, nothing is known.
+    if (!project.known)
+      return broken("DESKTOP_PROJECTS_UNKNOWN", {
+        path: root,
+        alias: ALIAS,
+        state: this.mac.desktopState,
+      });
     if (!project.remote)
       return missing(project.local ? "FOLDER_LOCAL_PROJECT" : "FOLDER_NOT_IN_DESKTOP", {
         path: root,
@@ -386,18 +393,30 @@ const shellQuote = (path: string) => `'${path.replaceAll("'", `'\\''`)}'`;
 /**
  * Where Codex Desktop has a folder: as a project on this-mac's connection, by its label, or as a
  * local project, by its name. Desktop records its remote projects only in its own state; the app
- * server's project/list holds its local projects, so it can't tell the two apart.
+ * server's project/list holds its local projects, so it can't tell the two apart. That state is
+ * private to Desktop: when it is missing or not in the form read here, `known` is false.
  */
 export function desktopProject(
   statePath: string,
   root: string,
-): { remote?: string; local?: string } {
+): { known: boolean; remote?: string; local?: string } {
   let state: any;
   try {
     state = JSON.parse(readFileSync(statePath, "utf8"));
   } catch {
-    return {};
+    return { known: false };
   }
+  const projects = state?.["remote-projects"];
+  const locals = state?.["local-projects"];
+  if (
+    !Array.isArray(projects) ||
+    !projects.every(
+      (project) => typeof project?.hostId === "string" && typeof project?.remotePath === "string",
+    ) ||
+    (locals !== undefined &&
+      (typeof locals !== "object" || locals === null || Array.isArray(locals)))
+  )
+    return { known: false };
   const list = (value: unknown): any[] => (Array.isArray(value) ? value : []);
   const same = (path: unknown) => typeof path === "string" && path.replace(/\/+$/, "") === root;
   const hosts = new Set([
@@ -413,6 +432,7 @@ export function desktopProject(
     (project: any) => Array.isArray(project?.rootPaths) && project.rootPaths.some(same),
   ) as any;
   return {
+    known: true,
     ...(remote ? { remote: String(remote.label ?? root) } : {}),
     ...(local ? { local: String(local.name ?? root) } : {}),
   };
