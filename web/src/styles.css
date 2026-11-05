@@ -322,7 +322,20 @@ td:first-child {
   flex: 1;
   min-width: 0;
 }
-.guide-step [data-slot="card-description"] {
+.guide-steps > li,
+.guide-step {
+  min-width: 0;
+}
+.guide-step [data-slot="card-description"],
+.guide-step code {
+  overflow-wrap: anywhere;
+}
+.wrap-button {
+  height: auto;
+  min-height: 2.25rem;
+  max-width: 100%;
+  white-space: normal;
+  text-align: left;
   overflow-wrap: anywhere;
 }
 .guide-waiting {

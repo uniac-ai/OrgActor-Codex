@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:net";
 import { tmpdir } from "node:os";
@@ -17,7 +18,8 @@ const native = { desktop: false, open: [] as string[] };
 
 test.beforeEach(async ({ page }) => {
   dir = mkdtempSync(join(tmpdir(), "orgactor-guide-browser-"));
-  home = join(dir, "home");
+  // A long home with spaces, as under Application Support, so wrapping and quoting are tested.
+  home = join(dir, "Users", "a person with a long name", "Application Support", "Provider home");
   mkdirSync(join(home, "bin"), { recursive: true });
   writeFileSync(join(home, "host.pub"), `${ed25519("host").public} root@mac\n`);
   writeFileSync(join(home, "bin", "codex"), "#!/bin/sh\n", { mode: 0o755 });
@@ -38,7 +40,11 @@ test.beforeEach(async ({ page }) => {
       hostKey: join(home, "host.pub"),
       codex: [join(home, "bin", "codex")],
       sshPort: port,
-      ssh: async () => ({ code: 0, stdout: "codex-cli 1.2.3\n" }),
+      // Desktop's `codex --version` answers; `ssh -G` is real, since it only reads the config.
+      ssh: async (args: string[]) =>
+        args[0] === "-G"
+          ? { code: 0, stdout: execFileSync("ssh", args, { encoding: "utf8", stdio: "pipe" }) }
+          : { code: 0, stdout: "codex-cli 1.2.3\n" },
     },
   });
   // A Hub that admitted this Provider, and a Codex that answers once Desktop connects.
@@ -116,7 +122,7 @@ test("the guided setup walks a fresh Mac to Ready, writing only what the person 
   await step(page, "desktop").getByRole("button", { name: "Re-check" }).click();
   await expect(page.getByText("Next: Workspace folder")).toBeVisible();
 
-  const trial = join(home, "trial");
+  const trial = join(home, "My Projects", "the person's trial");
   mkdirSync(join(trial, ".codex"), { recursive: true });
   writeFileSync(join(trial, ".codex", "config.toml"), '[mcp_servers.org]\ncommand = "x"\n');
   const suggested = join(home, "agentorg-codex");
@@ -127,10 +133,18 @@ test("the guided setup walks a fresh Mac to Ready, writing only what the person 
   await page.getByRole("button", { name: "Use this folder" }).click();
   await expect(step(page, "folder")).toContainText("AgentOrg's Codex adapter is connected there");
   await expect(step(page, "folder")).toContainText(
-    `agentorg-mcp disconnect codex --project ${trial}`,
+    `agentorg-mcp disconnect codex --project '${trial.replace("'", "'\\''")}'`,
   );
   await expect(page.getByRole("button", { name: `Use ${suggested}` })).toBeEnabled();
   await shot(page, "guide-folder-refused");
+  await page.setViewportSize({ width: 390, height: 844 });
+  await shot(page, "mobile-guide-folder-refused");
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  // Re-check leads back to choosing, with the refused folder ready to try again.
+  await step(page, "folder").getByRole("button", { name: "Re-check" }).click();
+  await expect(page.getByLabel("Folder")).toHaveValue(trial);
+  await page.getByRole("button", { name: "Use this folder" }).click();
+  await expect(step(page, "folder")).toContainText("AgentOrg's Codex adapter is connected there");
   await page.getByRole("button", { name: `Use ${suggested}` }).click();
   await expect(step(page, "folder")).toContainText("doesn't exist yet");
   await step(page, "folder").getByRole("button", { name: "Create folder" }).click();
@@ -179,13 +193,71 @@ test("Remove SSH access asks first, then removes exactly what was written", asyn
   writeFileSync(join(home, ".ssh", "config"), "Host other\n");
   await page.getByRole("button", { name: "Set up SSH access for this Mac" }).click();
   await page.getByRole("button", { name: "Write these" }).click();
+  await expect(step(page, "access")).toContainText("Done");
+  // Remote Login turns off: the access waits on it, and can still be removed.
+  sshd?.close();
+  sshd = undefined;
+  await step(page, "login").getByRole("button", { name: "Re-check" }).click();
+  await expect(step(page, "access")).toContainText("Waiting");
   await step(page, "access").getByRole("button", { name: "Remove SSH access" }).click();
   await expect(page.getByRole("dialog")).toContainText("keeping everything else");
   await page.getByRole("dialog").getByRole("button", { name: "Cancel" }).click();
   expect(readFileSync(join(home, ".ssh", "config"), "utf8")).toContain("Host this-mac");
   await step(page, "access").getByRole("button", { name: "Remove SSH access" }).click();
   await page.getByRole("dialog").getByRole("button", { name: "Remove access" }).click();
-  await expect(page.getByRole("button", { name: "Set up SSH access for this Mac" })).toBeVisible();
+  await expect(step(page, "access").getByRole("button", { name: "Remove SSH access" })).toHaveCount(
+    0,
+  );
   expect(readFileSync(join(home, ".ssh", "config"), "utf8")).toBe("Host other\n");
   expect(existsSync(join(home, ".ssh", "authorized_keys"))).toBe(false);
+});
+
+test("the Actors Status gives each Actor its own reason", async ({ page }) => {
+  sshd = createServer((socket) => socket.end());
+  await new Promise<void>((done) => sshd?.listen(port, "127.0.0.1", done));
+  native.desktop = true;
+  const api = (method: string, path: string, body?: unknown) =>
+    fetch(`${module.url}/api${path}`, {
+      method,
+      ...(body
+        ? { headers: { "content-type": "application/json" }, body: JSON.stringify(body) }
+        : {}),
+    }).then((r) => r.json());
+  const plan = await api("POST", "/setup/guide/access/plan");
+  await api("PUT", "/setup/guide/access", { planId: plan.id });
+  const folder = join(home, "agentorg-codex");
+  await api("PUT", "/setup/guide/folder", { path: folder });
+  await api("POST", "/setup/guide/folder");
+  native.open.push(folder);
+  const actor = (actorId: string, threadId: string, approvalAuthority: "desktop" | "hub") => {
+    module.store.data.actors[actorId] = {
+      actorId,
+      hubUrl: "http://127.0.0.1:8740",
+      threadId,
+      bridgeToken: "private",
+      enabled: !!threadId,
+      config: { approvalAuthority },
+      submissions: [],
+    };
+    module.store.data.journal[`http://127.0.0.1:8740|codex|${actorId}`] = threadId
+      ? { fingerprint: actorId, state: "ready", threadId }
+      : { fingerprint: actorId, state: "failed" };
+  };
+  actor("failed", "", "desktop");
+  actor("answered-by-hub", "hub-thread", "hub");
+  actor("answered-in-desktop", "desktop-thread", "desktop");
+  await page.getByRole("button", { name: "Actors", exact: true }).click();
+  const row = (id: string) => page.getByRole("row").filter({ hasText: id });
+  await expect(row("failed")).toContainText("Session creation failed: detach and attach again", {
+    timeout: 10_000,
+  });
+  await expect(row("answered-by-hub")).toContainText("Connecting");
+  await expect(row("answered-in-desktop")).toContainText(
+    "Waiting for Desktop: confirm the session",
+  );
+  await shot(page, "guide-actors-own-reasons");
+  await row("failed")
+    .getByRole("button", { name: /Session creation failed/ })
+    .click();
+  await expect(step(page, "actor").getByRole("button", { name: "Detach failed" })).toBeVisible();
 });

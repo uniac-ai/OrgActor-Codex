@@ -74,6 +74,8 @@ function fact(step: GuideStep): string {
       return "No SSH access is set up for this Provider yet.";
     case "ACCESS_INCOMPLETE":
       return "Part of this Provider's SSH access is missing.";
+    case "ACCESS_OVERRIDDEN":
+      return `An earlier line in ${d.path} sets this-mac's ${(d.options as string[]).join(", ")} first.`;
     case "PROVIDER_KEY_REFUSED":
       return "SSH refused this Provider's key.";
     case "DESKTOP_KEY_REFUSED":
@@ -123,30 +125,43 @@ function fact(step: GuideStep): string {
   }
 }
 
-/** The one reason an Actor isn't working, and the Setup step that fixes it. */
+const SHORT: Partial<Record<StepId, string>> = {
+  hub: "Hub not connected",
+  login: "Remote Login off",
+  access: "SSH access not ready",
+  desktop: "Desktop not connected",
+  folder: "Folder not ready in Desktop",
+};
+const REASONS: Record<string, string> = {
+  ACTOR_PROVISIONING_FAILED: "Session creation failed: detach and attach again",
+  ACTOR_CREATING: "Creating its session",
+  SESSION_UNCONFIRMED: "Waiting for Desktop: confirm the session",
+  ACTOR_TOOLS_MISSING: "Tools not ready",
+};
+
+/**
+ * The one reason an Actor isn't working, and the Setup step that fixes it. Only a step that needs
+ * someone counts, and a step about one Actor counts only for that Actor.
+ */
 export function actorStatus(
   actor: ActorSnapshot,
   guide: Guide | null,
 ): { text: string; step?: StepId; ready?: boolean } {
   if (actor.connectionState === "suspended") return { text: "Suspended: resume its connection" };
-  if (!actor.enabled) return { text: "Paused" };
-  const blocker = guide?.steps.find((s) => s.state !== "done" && s.id !== "actor");
-  if (actor.connectionState === "awaiting-desktop" || blocker?.id === "session")
-    return { text: "Waiting for Desktop: confirm the session", step: "session" };
+  const blocker = guide?.steps.find(
+    (s) =>
+      (s.state === "missing" || s.state === "broken") &&
+      (s.details?.actorId ?? actor.actorId) === actor.actorId &&
+      s.code !== "ACTOR_PAUSED",
+  );
   if (blocker)
     return {
-      text: {
-        hub: "Hub not connected",
-        login: "Remote Login off",
-        access: "SSH access not set up",
-        desktop: "Desktop not connected",
-        folder: "Folder not open in Desktop",
-        actor: "Not attached",
-        session: "Waiting for Desktop: confirm the session",
-        tools: "Tools not ready",
-      }[blocker.id],
+      text: REASONS[blocker.code] ?? SHORT[blocker.id] ?? TITLES[blocker.id],
       step: blocker.id,
     };
+  if (actor.connectionState === "awaiting-desktop")
+    return { text: REASONS.SESSION_UNCONFIRMED, step: "session" };
+  if (!actor.enabled) return { text: "Paused" };
   if (actor.requests.length)
     return {
       text: `Request pending: answer in ${actor.approvalAuthority === "desktop" ? "Codex Desktop" : "AgentOrg"}`,
@@ -184,7 +199,9 @@ export function GuideSteps(p: GuideFeature) {
               </div>
               <CardDescription>{fact(step)}</CardDescription>
             </CardHeader>
-            {step.state === "missing" || step.state === "broken" || step.code === "ACCESS_READY" ? (
+            {step.state === "missing" ||
+            step.state === "broken" ||
+            (step.id === "access" && p.guide.accessPresent) ? (
               <StepBody step={step} {...p} />
             ) : null}
           </Card>
@@ -213,7 +230,8 @@ function StepBody(p: GuideFeature & { step: GuideStep }) {
       Remove SSH access
     </Button>
   );
-  let body: ReactNode = <Actions>{recheck}</Actions>;
+  let body: ReactNode =
+    p.step.state === "waiting" || p.step.state === "done" ? null : <Actions>{recheck}</Actions>;
   switch (p.step.code) {
     case "HUB_UNCONFIGURED":
       body = (
@@ -273,21 +291,23 @@ function StepBody(p: GuideFeature & { step: GuideStep }) {
         </Actions>
       );
       break;
+    case "ACCESS_OVERRIDDEN":
+      body = (
+        <>
+          <p className="muted text-sm">Move or remove that line for this-mac, then re-check.</p>
+          <Actions>{recheck}</Actions>
+        </>
+      );
+      break;
     case "ACCESS_INCOMPLETE":
     case "PROVIDER_KEY_REFUSED":
     case "DESKTOP_KEY_REFUSED":
       body = (
         <>
           <p className="muted text-sm">Remove this Provider's SSH access, then set it up again.</p>
-          <Actions>
-            {remove}
-            {recheck}
-          </Actions>
+          <Actions>{recheck}</Actions>
         </>
       );
-      break;
-    case "ACCESS_READY":
-      body = <Actions>{remove}</Actions>;
       break;
     case "DESKTOP_NOT_CONNECTED":
       body = (
@@ -304,7 +324,7 @@ function StepBody(p: GuideFeature & { step: GuideStep }) {
       body = <ChooseFolder {...p} />;
       break;
     case "FOLDER_HAS_ADAPTER":
-      body = <Refused path={d.path} {...p} />;
+      body = <Refused path={d.path} disconnect={d.disconnect} {...p} />;
       break;
     case "FOLDER_MISSING":
       body = (
@@ -391,6 +411,14 @@ function StepBody(p: GuideFeature & { step: GuideStep }) {
       );
       break;
   }
+  // The guide's access can be removed whatever step the guide is on.
+  if (p.step.id === "access" && p.guide.accessPresent)
+    body = (
+      <>
+        {body}
+        <Actions>{remove}</Actions>
+      </>
+    );
   return <CardContent className="stack">{body}</CardContent>;
 }
 
@@ -418,8 +446,10 @@ function ChooseFolder(p: GuideFeature) {
   );
 }
 
+const shellQuote = (path: string) => `'${path.replaceAll("'", `'\\''`)}'`;
+
 /** A folder connected to AgentOrg's Codex adapter, with its two fixes. */
-function Refused(p: GuideFeature & { path: string }) {
+function Refused(p: GuideFeature & { path: string; disconnect?: string }) {
   return (
     <>
       <div role="status" className="notice">
@@ -427,12 +457,23 @@ function Refused(p: GuideFeature & { path: string }) {
         refuse the Actor's session. Use a folder of its own, or disconnect the adapter.
       </div>
       <Actions>
-        <Button disabled={p.busy} onClick={() => p.onChooseFolder(p.guide.folder.suggested)}>
+        <Button
+          className="wrap-button"
+          disabled={p.busy}
+          onClick={() => p.onChooseFolder(p.guide.folder.suggested)}
+        >
           Use {p.guide.folder.suggested}
+        </Button>
+        <Button variant="outline" size="sm" disabled={p.checking} onClick={p.onRecheck}>
+          <RefreshCw />
+          Re-check
         </Button>
       </Actions>
       <p className="muted text-sm">
-        Or, keeping that folder: <code>agentorg-mcp disconnect codex --project {p.path}</code>
+        Or, keeping that folder:{" "}
+        <code>
+          {p.disconnect ?? `agentorg-mcp disconnect codex --project ${shellQuote(p.path)}`}
+        </code>
       </p>
     </>
   );

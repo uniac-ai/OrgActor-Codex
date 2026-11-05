@@ -34,7 +34,9 @@ The guided setup on a Mac, from `web/e2e/guide.spec.ts`. Its Mac, Hub and Codex 
 ![Guided setup on a fresh Mac — browser fixture](../evidence/console/guide-fresh.png)
 ![The review before SSH access is written — browser fixture](../evidence/console/guide-consent.png)
 ![A folder connected to AgentOrg's adapter, refused — browser fixture](../evidence/console/guide-folder-refused.png)
+![The refused folder on a phone, with a long path — browser fixture](../evidence/console/mobile-guide-folder-refused.png)
 ![An Actor's one blocking reason — browser fixture](../evidence/console/guide-actors-status.png)
+![Each Actor's own reason — browser fixture](../evidence/console/guide-actors-own-reasons.png)
 ![Ready — browser fixture](../evidence/console/guide-ready.png)
 ![Mobile guided setup — browser fixture](../evidence/console/mobile-guide.png)
 

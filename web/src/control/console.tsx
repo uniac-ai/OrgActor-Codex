@@ -93,6 +93,11 @@ export function ConsoleControl() {
     }
   };
   const recheck = async () => {
+    // A refused folder may have had its adapter disconnected; it can be chosen again.
+    if (refusedFolder) {
+      setFolder(refusedFolder);
+      setRefusedFolder(null);
+    }
     setChecking(true);
     try {
       setGuide(await client.guide(true));

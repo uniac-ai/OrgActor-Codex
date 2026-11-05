@@ -37,15 +37,15 @@ When the console runs on the Mac where Codex Desktop runs, **Setup** guides one 
 2. **Remote Login:** System Settings → General → Sharing → Remote Login on, with access for only your user and full disk access off.
 3. **SSH access:** **Set up SSH access for this Mac** shows every write first, and nothing is written until you confirm. It covers:
    - keys in the Provider's runtime folder;
-   - two `authorized_keys` lines, from this Mac only, one forced to `codex app-server proxy`;
-   - a `Host this-mac` block, after a backup of `~/.ssh/config`;
+   - two `authorized_keys` lines, from this Mac only and without forwarding, one forced to `codex app-server proxy`;
+   - a `Host this-mac` block before the first `Host` or `Match` in `~/.ssh/config`, after a backup of it;
    - `known_hosts` from the Mac's own host key;
    - the Desktop wrapper.
 
-   **Remove SSH access** removes exactly what was written.
+   The step checks that ssh resolves `this-mac` to the block's own values. **Remove SSH access** removes exactly what was written, whatever step Setup is on.
 4. **Codex Desktop connected:** in Codex Desktop, Settings → Connections → SSH → `this-mac` → Connect.
-5. **Workspace folder:** a folder of the Actor's own, created when you confirm. Then add it in Desktop under `this-mac`. A folder connected to AgentOrg's Codex adapter (`agentorg-mcp connect codex`) is refused: Codex would refuse the Actor's session there. The step offers another folder or the exact `disconnect` command.
-6. **Actor:** attach it here, or create it from the Hub. Attaching waits until steps 1 to 5 are done.
+5. **Workspace folder:** one folder for this Provider, used for nothing else, created when you confirm. Then add it in Desktop under `this-mac`. A folder connected to AgentOrg's Codex adapter (`agentorg-mcp connect codex`) is refused: Codex would refuse the Actor's session there. The step offers another folder or the exact `disconnect` command.
+6. **Actor:** attach it here, or create it from the Hub. The console's Attach waits until steps 1 to 5 are done; an Actor created from the Hub isn't held back, so create it once they are.
 7. **Session in Desktop:** open the named session in Desktop under `this-mac` → the folder, then **I see it**.
 8. **Actor tools:** the session lists its Hub tools.
 
