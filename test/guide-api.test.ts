@@ -44,6 +44,7 @@ test("the guide's API reviews, writes and removes SSH access, never returning a 
   const guide = await call("GET", "/setup/guide");
   assert.equal(guide.status, 200);
   assert.equal(guide.body.available, true);
+  assert.equal(guide.body.inUse, false);
   assert.deepEqual(
     guide.body.steps.map((s: any) => s.id),
     ["hub", "login", "access", "desktop", "folder", "actor", "session", "tools"],
@@ -66,6 +67,7 @@ test("the guide's API reviews, writes and removes SSH access, never returning a 
   assert.equal(applied.status, 200);
   assert.equal(applied.body.settings.backend.kind, "ssh");
   assert.equal(applied.body.settings.backend.privateKeyPresent, true);
+  assert.equal((await call("GET", "/setup/guide")).body.inUse, true);
   assert.equal(applied.body.settings.bridgeUrl, `${server.url}/mcp`);
   assert.ok(existsSync(join(home, ".ssh", "authorized_keys")));
   assert.equal((await call("POST", "/setup/guide/access/plan")).body.error.code, "ACCESS_PRESENT");

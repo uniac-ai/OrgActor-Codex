@@ -129,6 +129,8 @@ export interface GuideStep {
 export interface Guide {
   /** Whether this Provider runs on a Mac the guide can set up; otherwise only other setups apply. */
   available: boolean;
+  /** Whether the Provider's backend is the guide's SSH access, so its order governs attaching. */
+  inUse: boolean;
   checkedAt: string;
   folder: { path?: string; suggested: string };
   steps: GuideStep[];

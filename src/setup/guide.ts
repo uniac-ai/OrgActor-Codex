@@ -111,6 +111,7 @@ export class GuideService {
       }
     return {
       available: this.available,
+      inUse: this.inUse,
       checkedAt: new Date().toISOString(),
       folder: {
         ...(this.store.data.settings.workspaceRoot
