@@ -204,7 +204,11 @@ export class NativeProtocol extends EventEmitter {
  * What an Actor's session may do on this Mac, without asking: full access, network included. Codex
  * never prompts, so no turn waits on a person; permission gating comes back through the Hub.
  */
-const ACCESS = { approvalPolicy: "never", sandbox: "danger-full-access" } as const;
+const ACCESS = {
+  approvalPolicy: "never",
+  sandbox: "danger-full-access",
+  sandboxPolicy: { type: "dangerFullAccess" },
+} as const;
 
 /** The session's own `org` MCP server: this Actor's bridge. Its Tools are pre-approved. */
 const orgServer = (binding: { bridgeUrl: string; bridgeToken: string }) => ({
@@ -222,7 +226,8 @@ const sessionStart = (
 ) => ({
   cwd: input.cwd,
   ...(input.model ? { model: input.model } : {}),
-  ...ACCESS,
+  approvalPolicy: ACCESS.approvalPolicy,
+  sandbox: ACCESS.sandbox,
   ephemeral,
   historyMode: "legacy",
   modelProvider: "openai",
@@ -332,11 +337,10 @@ export class AppServerAdapter implements CodexAdapter {
         );
       return read;
     }
-    return this.protocol.request("thread/resume", {
+    const resumed = await this.protocol.request("thread/resume", {
       threadId,
       excludeTurns: true,
       modelProvider: "openai",
-      ...ACCESS,
       ...(binding
         ? {
             config: {
@@ -346,6 +350,14 @@ export class AppServerAdapter implements CodexAdapter {
           }
         : {}),
     });
+    // A session another connection already loaded keeps its settings through a resume, so the
+    // access is applied to the loaded session itself.
+    await this.protocol.request("thread/settings/update", {
+      threadId,
+      approvalPolicy: ACCESS.approvalPolicy,
+      sandboxPolicy: ACCESS.sandboxPolicy,
+    });
+    return resumed;
   }
   async bridgeReady(threadId: string): Promise<boolean> {
     const r = await this.protocol.request("mcpServerStatus/list", {
