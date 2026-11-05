@@ -32,6 +32,8 @@ export interface ThisMac {
   /** Where Codex Desktop's bundled `codex` may be, in order. */
   codex: string[];
   sshPort: number;
+  /** Codex Desktop's own state, where it records its projects. */
+  desktopState: string;
   ssh(args: string[]): Promise<{ code: number | null; stdout: string }>;
 }
 
@@ -51,6 +53,7 @@ export function thisMac(): ThisMac {
         .map((d) => join(d, "codex")),
     ],
     sshPort: 22,
+    desktopState: join(homedir(), ".codex", ".codex-global-state.json"),
     ssh: (args) =>
       new Promise((resolve) => {
         const child = spawn("ssh", args, {

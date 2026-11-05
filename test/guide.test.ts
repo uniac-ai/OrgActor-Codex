@@ -19,7 +19,7 @@ import { Fault } from "../src/management/schema.js";
 import { CodexProvider } from "../src/provider/index.js";
 import { RuntimeStore } from "../src/runtime/index.js";
 import { ed25519, type ThisMac, ThisMacAccess } from "../src/setup/access.js";
-import { GuideService, hasAdapter } from "../src/setup/guide.js";
+import { desktopProject, GuideService, hasAdapter } from "../src/setup/guide.js";
 import { SetupService } from "../src/setup/index.js";
 
 const temp = (t: test.TestContext, name: string) => {
@@ -48,6 +48,7 @@ function fakeMac(home: string, overrides: Partial<ThisMac> = {}): ThisMac {
     hostKey,
     codex: [join(home, "absent", "codex"), codex],
     sshPort: 22,
+    desktopState: join(home, ".codex-global-state.json"),
     ssh: fakeSsh,
     ...overrides,
   };
@@ -289,10 +290,26 @@ test("the guide walks the steps in order, each waiting on the one before", async
   assert.equal((await at("folder")).code, "FOLDER_MISSING");
   guide.createFolder();
   assert.equal((await at("folder")).code, "FOLDER_NOT_IN_DESKTOP");
-  native.open.push(dedicated);
+  // A local project in Desktop doesn't count: the Actor's session runs on this-mac's Codex.
+  const desktop = (state: object) => writeFileSync(mac.desktopState, JSON.stringify(state));
+  desktop({ "local-projects": { p: { name: "Codex Actor", rootPaths: [dedicated] } } });
+  assert.deepEqual(await at("folder"), {
+    id: "folder",
+    state: "missing",
+    code: "FOLDER_LOCAL_PROJECT",
+    details: { path: dedicated, alias: "this-mac", project: "Codex Actor" },
+  });
+  desktop({
+    "codex-managed-remote-connections": [{ hostId: "ssh:7", alias: "this-mac" }],
+    "remote-projects": [{ hostId: "ssh:7", remotePath: `${dedicated}/`, label: "Actor" }],
+  });
   assert.equal((await at("folder")).code, "PREFLIGHT_REFUSED");
   native.refuse = false;
-  assert.equal((await at("folder")).code, "FOLDER_READY");
+  assert.deepEqual((await at("folder")).details, {
+    path: dedicated,
+    alias: "this-mac",
+    project: "Actor",
+  });
   const preflight = frames.findLast((f) => f.method === "thread/start");
   assert.equal(preflight?.params.ephemeral, true);
   assert.equal(preflight?.params.cwd, dedicated);
@@ -320,6 +337,7 @@ test("the guide walks the steps in order, each waiting on the one before", async
   assert.deepEqual((await at("session")).details, {
     alias: "this-mac",
     path: dedicated,
+    project: "Actor",
     actorId: "act",
     threadId: "thread",
   });
@@ -615,4 +633,37 @@ test("setup changes run one at a time, so concurrent ones keep each other's sett
   assert.equal(store.data.settings.workspaceRoot, join(home, "agentorg-codex"));
   assert.equal(store.data.settings.backend?.kind, "ssh");
   assert.equal(store.data.providerEnabled, true);
+});
+
+test("only a project on this-mac's own connection counts as open in Desktop", (t) => {
+  const dir = temp(t, "desktop");
+  const state = join(dir, "state.json");
+  const root = "/Users/person/agentorg-codex";
+  assert.deepEqual(desktopProject(join(dir, "absent.json"), root), {});
+  writeFileSync(
+    state,
+    JSON.stringify({
+      "remote-projects": [
+        { hostId: "remote-ssh-discovered:elsewhere", remotePath: root, label: "Other host" },
+        {
+          hostId: "remote-ssh-discovered:this-mac",
+          remotePath: `${root}-2`,
+          label: "Other folder",
+        },
+      ],
+      "local-projects": { a: { name: "Local", rootPaths: ["/x", root] } },
+    }),
+  );
+  assert.deepEqual(desktopProject(state, root), { local: "Local" });
+  writeFileSync(
+    state,
+    JSON.stringify({
+      "remote-projects": [
+        { hostId: "remote-ssh-discovered:this-mac", remotePath: root, label: "Trial" },
+      ],
+    }),
+  );
+  assert.deepEqual(desktopProject(state, root), { remote: "Trial" });
+  writeFileSync(state, "{ not json");
+  assert.deepEqual(desktopProject(state, root), {});
 });

@@ -23,6 +23,7 @@ async function guided(t: test.TestContext) {
     hostKey: join(home, "host.pub"),
     codex: [join(home, "bin", "codex")],
     sshPort: 22,
+    desktopState: join(home, ".codex-global-state.json"),
     // Desktop's `codex --version` answers; `ssh -G` is real, since it only reads the config.
     ssh: async (args) =>
       args[0] === "-G"
@@ -156,6 +157,7 @@ test("off a Mac the guide reports itself unavailable and writes nothing", async 
       hostKey: join(dir, "absent"),
       codex: [],
       sshPort: 22,
+      desktopState: join(dir, "absent.json"),
       ssh: async () => ({ code: 255, stdout: "" }),
     },
   });

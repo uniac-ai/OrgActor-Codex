@@ -14,7 +14,7 @@ let dir: string;
 let home: string;
 let sshd: Server | undefined;
 let port: number;
-const native = { desktop: false, open: [] as string[] };
+const native = { desktop: false };
 
 test.beforeEach(async ({ page }) => {
   dir = mkdtempSync(join(tmpdir(), "orgactor-guide-browser-"));
@@ -28,7 +28,6 @@ test.beforeEach(async ({ page }) => {
   port = (free.address() as { port: number }).port;
   await new Promise((done) => free.close(done));
   native.desktop = false;
-  native.open = [];
   module = await startServer({
     root: join(dir, "runtime"),
     port: 0,
@@ -40,6 +39,7 @@ test.beforeEach(async ({ page }) => {
       hostKey: join(home, "host.pub"),
       codex: [join(home, "bin", "codex")],
       sshPort: port,
+      desktopState: join(home, ".codex-global-state.json"),
       // Desktop's `codex --version` answers; `ssh -G` is real, since it only reads the config.
       ssh: async (args: string[]) =>
         args[0] === "-G"
@@ -56,8 +56,6 @@ test.beforeEach(async ({ page }) => {
   module.actors.launch = () => {};
   const adapter = new AppServerAdapter({
     request: async (method: string, params: any) => {
-      if (method === "project/list")
-        return { data: native.open.map((path) => ({ roots: [{ path }] })), nextCursor: null };
       if (method === "thread/start") return { thread: { id: "ephemeral" } };
       if (method === "thread/unsubscribe") return { status: "unsubscribed" };
       if (method === "thread/read")
@@ -80,6 +78,9 @@ test.afterEach(async () => {
   rmSync(dir, { recursive: true, force: true });
 });
 const step = (page: Page, id: string) => page.locator(`#step-${id}`);
+/** Desktop's own record of its projects, as Codex Desktop writes it. */
+const openInDesktop = (state: object) =>
+  writeFileSync(join(home, ".codex-global-state.json"), JSON.stringify(state));
 const shot = async (page: Page, name: string) => {
   mkdirSync("evidence/console", { recursive: true });
   await page.evaluate(() => {
@@ -149,9 +150,21 @@ test("the guided setup walks a fresh Mac to Ready, writing only what the person 
   await expect(step(page, "folder")).toContainText("doesn't exist yet");
   await step(page, "folder").getByRole("button", { name: "Create folder" }).click();
   await page.getByRole("dialog").getByRole("button", { name: "Create folder" }).click();
-  await expect(step(page, "folder")).toContainText("Desktop doesn't have");
+  await expect(step(page, "folder")).toContainText("Desktop has no project for");
+  await expect(step(page, "folder")).toContainText(
+    "Under SSH connections from this Mac, choose Add a remote project on this-mac.",
+  );
   expect(existsSync(suggested)).toBe(true);
-  native.open.push(suggested);
+  // A local project with the folder is named as such; a project on this-mac completes the step.
+  openInDesktop({ "local-projects": { p: { name: "Codex Actor", rootPaths: [suggested] } } });
+  await step(page, "folder").getByRole("button", { name: "Re-check" }).click();
+  await expect(step(page, "folder")).toContainText("as the local project Codex Actor");
+  await shot(page, "guide-folder-local-project");
+  openInDesktop({
+    "remote-projects": [
+      { hostId: "remote-ssh-discovered:this-mac", remotePath: suggested, label: "Actor" },
+    ],
+  });
   await step(page, "folder").getByRole("button", { name: "Re-check" }).click();
   await expect(page.getByText("Next: Actor")).toBeVisible();
   await expect(step(page, "actor").getByLabel("Actor ID")).toBeVisible();
@@ -178,6 +191,7 @@ test("the guided setup walks a fresh Mac to Ready, writing only what the person 
   await shot(page, "guide-actors-status");
   await status.click();
   await expect(step(page, "session")).toContainText("session-thread");
+  await expect(step(page, "session")).toContainText("open the project Actor on this-mac");
   await step(page, "session").getByRole("button", { name: "I see it" }).click();
   await expect(page.getByText("Ready: the Actor works from Codex Desktop.")).toBeVisible();
   expect(module.store.data.probes.desktop?.code).toBe("OPERATOR_CONFIRMED_DESKTOP");
@@ -228,7 +242,11 @@ test("the Actors Status gives each Actor its own reason", async ({ page }) => {
   const folder = join(home, "agentorg-codex");
   await api("PUT", "/setup/guide/folder", { path: folder });
   await api("POST", "/setup/guide/folder");
-  native.open.push(folder);
+  openInDesktop({
+    "remote-projects": [
+      { hostId: "remote-ssh-discovered:this-mac", remotePath: folder, label: "Actor" },
+    ],
+  });
   const actor = (actorId: string, threadId: string, approvalAuthority: "desktop" | "hub") => {
     module.store.data.actors[actorId] = {
       actorId,

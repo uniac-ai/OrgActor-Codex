@@ -204,8 +204,13 @@ export class GuideService {
     const adapter = await this.adapter();
     if (!adapter) return missing("DESKTOP_NOT_CONNECTED", { alias: ALIAS });
     const revision = this.store.data.revision;
-    const open = await this.once(`project:${revision}`, () => projectOpen(adapter, root), Boolean);
-    if (!open) return missing("FOLDER_NOT_IN_DESKTOP", { path: root, alias: ALIAS });
+    const project = desktopProject(this.mac.desktopState, root);
+    if (!project.remote)
+      return missing(project.local ? "FOLDER_LOCAL_PROJECT" : "FOLDER_NOT_IN_DESKTOP", {
+        path: root,
+        alias: ALIAS,
+        ...(project.local ? { project: project.local } : {}),
+      });
     // A session created in this folder already shows Codex accepts it there.
     if (!this.attached().length) {
       const bridgeUrl = this.store.data.settings.bridgeUrl;
@@ -222,7 +227,7 @@ export class GuideService {
       );
       if (!accepted) return broken("PREFLIGHT_REFUSED", { path: root });
     }
-    return done("FOLDER_READY", { path: root, alias: ALIAS });
+    return done("FOLDER_READY", { path: root, alias: ALIAS, project: project.remote });
   }
   private actor(): Check {
     const journal = Object.entries(this.store.data.journal);
@@ -243,10 +248,12 @@ export class GuideService {
   }
   private session(): Check {
     const waiting = this.attached().find((actor) => waitsForDesktop(actor, this.store.data));
+    const root = this.store.data.settings.workspaceRoot;
     if (waiting)
       return missing("SESSION_UNCONFIRMED", {
         alias: ALIAS,
-        path: this.store.data.settings.workspaceRoot,
+        path: root,
+        ...(root ? { project: desktopProject(this.mac.desktopState, root).remote } : {}),
         actorId: waiting.actorId,
         threadId: waiting.threadId,
       });
@@ -376,22 +383,37 @@ export class GuideService {
 
 const shellQuote = (path: string) => `'${path.replaceAll("'", `'\\''`)}'`;
 
-/** Whether Codex Desktop has the folder among its projects on this backend. */
-async function projectOpen(adapter: AppServerAdapter, root: string): Promise<boolean> {
-  let cursor: string | undefined;
-  for (let page = 0; page < 10; page++) {
-    const projects = await adapter.protocol.request("project/list", {
-      limit: 100,
-      ...(cursor ? { cursor } : {}),
-    });
-    if (
-      projects.data?.some((p: any) =>
-        p.roots?.some((r: any) => (typeof r === "string" ? r : r.path) === root),
-      )
-    )
-      return true;
-    cursor = projects.nextCursor ?? undefined;
-    if (!cursor) return false;
+/**
+ * Where Codex Desktop has a folder: as a project on this-mac's connection, by its label, or as a
+ * local project, by its name. Desktop records its remote projects only in its own state; the app
+ * server's project/list holds its local projects, so it can't tell the two apart.
+ */
+export function desktopProject(
+  statePath: string,
+  root: string,
+): { remote?: string; local?: string } {
+  let state: any;
+  try {
+    state = JSON.parse(readFileSync(statePath, "utf8"));
+  } catch {
+    return {};
   }
-  return false;
+  const list = (value: unknown): any[] => (Array.isArray(value) ? value : []);
+  const same = (path: unknown) => typeof path === "string" && path.replace(/\/+$/, "") === root;
+  const hosts = new Set([
+    `remote-ssh-discovered:${ALIAS}`,
+    ...list(state?.["codex-managed-remote-connections"])
+      .filter((connection) => connection?.alias === ALIAS)
+      .map((connection) => connection.hostId),
+  ]);
+  const remote = list(state?.["remote-projects"]).find(
+    (project) => hosts.has(project?.hostId) && same(project?.remotePath),
+  );
+  const local = Object.values(state?.["local-projects"] ?? {}).find(
+    (project: any) => Array.isArray(project?.rootPaths) && project.rootPaths.some(same),
+  ) as any;
+  return {
+    ...(remote ? { remote: String(remote.label ?? root) } : {}),
+    ...(local ? { local: String(local.name ?? root) } : {}),
+  };
 }
