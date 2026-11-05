@@ -35,6 +35,16 @@ export function management(
         "Open the console at 127.0.0.1, localhost or [::1].",
         403,
       );
+    // A page on another site can send a form-like request without asking first. Requiring JSON
+    // makes the browser ask, which this API never grants, and a foreign Origin is refused outright.
+    const origin = c.req.header("origin");
+    if (origin !== undefined && origin !== new URL(c.req.url).origin)
+      throw new Fault("ORIGIN_NOT_ALLOWED", "Use the console from its own address.", 403);
+    if (
+      !["GET", "HEAD"].includes(c.req.method) &&
+      c.req.header("content-type")?.split(";")[0].trim().toLowerCase() !== "application/json"
+    )
+      throw new Fault("JSON_REQUIRED", "Send the request as application/json.", 415);
     c.header("Cache-Control", "no-store");
     c.header("X-Content-Type-Options", "nosniff");
     await next();

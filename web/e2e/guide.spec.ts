@@ -195,9 +195,8 @@ test("the Actors Status gives each Actor its own reason", async ({ page }) => {
   const api = (method: string, path: string, body?: unknown) =>
     fetch(`${module.url}/api${path}`, {
       method,
-      ...(body
-        ? { headers: { "content-type": "application/json" }, body: JSON.stringify(body) }
-        : {}),
+      headers: { "content-type": "application/json" },
+      ...(body ? { body: JSON.stringify(body) } : {}),
     }).then((r) => r.json());
   await api("PUT", "/setup/guide/codex");
   const folder = join(home, "agentorg-codex");
