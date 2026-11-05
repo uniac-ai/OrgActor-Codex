@@ -203,6 +203,20 @@ export class NativeProtocol extends EventEmitter {
   }
 }
 
+/**
+ * The session's own `org` MCP server: this Actor's bridge. Its Tools are pre-approved, since the
+ * Hub already decides what the Actor may do with them; Codex would otherwise ask the native input
+ * owner before every Hub write.
+ */
+const orgServer = (binding: { bridgeUrl: string; bridgeToken: string }) => ({
+  url: binding.bridgeUrl,
+  http_headers: { Authorization: `Bearer ${binding.bridgeToken}` },
+  required: false,
+  enabled: true,
+  tool_timeout_sec: 660,
+  default_tools_approval_mode: "approve",
+});
+
 export class AppServerAdapter implements CodexAdapter {
   private created = new Map<string, { bridgeUrl: string; bridgeToken: string }>();
   constructor(readonly protocol: NativeProtocol) {}
@@ -224,13 +238,7 @@ export class AppServerAdapter implements CodexAdapter {
       serviceName: "orgactor-codex",
       config: {
         forced_login_method: "chatgpt",
-        "mcp_servers.org": {
-          url: input.bridgeUrl,
-          http_headers: { Authorization: `Bearer ${input.bridgeToken}` },
-          required: false,
-          enabled: true,
-          tool_timeout_sec: 660,
-        },
+        "mcp_servers.org": orgServer(input),
       },
     });
     if (typeof result.thread?.id !== "string")
@@ -276,13 +284,7 @@ export class AppServerAdapter implements CodexAdapter {
         ? {
             config: {
               forced_login_method: "chatgpt",
-              "mcp_servers.org": {
-                url: binding.bridgeUrl,
-                http_headers: { Authorization: `Bearer ${binding.bridgeToken}` },
-                required: false,
-                enabled: true,
-                tool_timeout_sec: 660,
-              },
+              "mcp_servers.org": orgServer(binding),
             },
           }
         : {}),

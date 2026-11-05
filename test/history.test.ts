@@ -143,6 +143,22 @@ for (const Adapter of [SshAdapter, AppServerAdapter])
     assert.equal(bootstrap.submissions[0].result?.output, "actual");
   });
 
+for (const Adapter of [SshAdapter, AppServerAdapter])
+  test(`${Adapter.name} pre-approves the Actor's own Hub Tools when it starts and resumes a session`, async (t) => {
+    const { protocol, state } = await fixture(t);
+    const binding = { bridgeUrl: "http://127.0.0.1/mcp", bridgeToken: "BRIDGE_TEST_ONLY" };
+    const threadId = await new Adapter(protocol).create({ cwd: "/owned", ...binding });
+    state.materialized = true;
+    await new Adapter(protocol).resume(threadId, binding);
+    const call = (method: string) => state.calls.find((c) => c.method === method);
+    assert.equal(call("thread/start")?.params.approvalPolicy, "on-request");
+    for (const method of ["thread/start", "thread/resume"])
+      assert.equal(
+        call(method)?.params.config["mcp_servers.org"].default_tools_approval_mode,
+        "approve",
+      );
+  });
+
 test("initial reuse requires the creating adapter, unchanged binding, empty identity and no submitted request", async (t) => {
   const { protocol, state } = await fixture(t);
   const native = new AppServerAdapter(protocol);
