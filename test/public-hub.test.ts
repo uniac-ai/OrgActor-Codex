@@ -208,6 +208,13 @@ for (const delayed of ["item", "turn-and-item"])
       workspaceRoot: "/owned",
       bridgeUrl: `${runtime.url}/mcp`,
     });
+    // Desktop is confirmed, so an Actor that Codex Desktop answers for keeps running.
+    runtime.store.data.probes.desktop = {
+      state: "ready",
+      code: "OPERATOR_CONFIRMED_DESKTOP",
+      revision: runtime.store.data.revision,
+      checkedAt: new Date().toISOString(),
+    };
     await runtime.provider.setEnabled(true);
     await until(() => runtime.provider.snapshot().connected);
     const publicTools = await root.available();

@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import { z } from "zod";
-import type { ActorSupervisor } from "../actors/supervisor.js";
+import { type ActorSupervisor, waitsForDesktop } from "../actors/supervisor.js";
 import type { CodexProvider } from "../provider/index.js";
 import type { RuntimeStore } from "../runtime/index.js";
 import type { SetupService } from "../setup/index.js";
@@ -56,7 +56,13 @@ export function management(
             actorId: b.actorId,
             enabled: b.enabled,
             connected: false,
-            connectionState: b.suspended ? "suspended" : b.enabled ? "connecting" : "paused",
+            connectionState: b.suspended
+              ? "suspended"
+              : !b.enabled
+                ? "paused"
+                : b.threadId && waitsForDesktop(b, store.data)
+                  ? "awaiting-desktop"
+                  : "connecting",
             observation: "unavailable",
             observedAt: null,
             threadId: b.threadId,
@@ -78,9 +84,11 @@ export function management(
     c.json(await setup.probe(ProbeStage.parse(c.req.param("stage")))),
   );
   app.post("/api/setup/login", async (c) => c.json(await setup.login()));
-  app.post("/api/setup/desktop-confirmation", async (c) =>
-    c.json(await setup.confirmDesktop(await c.req.json())),
-  );
+  app.post("/api/setup/desktop-confirmation", async (c) => {
+    const report = await setup.confirmDesktop(await c.req.json());
+    actors.recover();
+    return c.json(report);
+  });
   app.delete("/api/setup/login/:id", async (c) => {
     await setup.cancelLogin(c.req.param("id"));
     return c.json({ cancelled: true });
@@ -113,6 +121,7 @@ export function management(
         );
       store.data.actors[id].config.approvalAuthority = data.approvalAuthority;
       store.save();
+      actors.recover();
     }
     if (data.enabled !== undefined) await actors.setEnabled(id, data.enabled);
     return c.json({ updated: true });

@@ -75,7 +75,7 @@ export interface ActorSnapshot {
   actorId: string;
   enabled: boolean;
   connected: boolean;
-  connectionState: "connected" | "connecting" | "paused" | "suspended";
+  connectionState: "connected" | "connecting" | "paused" | "suspended" | "awaiting-desktop";
   observation: "available" | "unavailable";
   observedAt: string | null;
   threadId: string;

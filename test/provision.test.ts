@@ -333,6 +333,13 @@ for (const mode of ["fresh", "unknown", "offline", "rejected", "lost"])
     seed.save();
     const runtime = await startServer({ root, port: 0 });
     runtime.store.data.settings.bridgeUrl = `${runtime.url}/mcp`;
+    // Desktop is confirmed, so an Actor that Codex Desktop answers for keeps running.
+    runtime.store.data.probes.desktop = {
+      state: "ready",
+      code: "OPERATOR_CONFIRMED_DESKTOP",
+      revision: runtime.store.data.revision,
+      checkedAt: new Date().toISOString(),
+    };
     runtime.store.save();
     t.after(async () => {
       await mcp.close();
