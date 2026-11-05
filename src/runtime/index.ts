@@ -84,6 +84,17 @@ export interface Provision {
   state: "creating" | "ready" | "unknown" | "failed";
   threadId?: string;
 }
+/** The SSH access the guided setup wrote on this Mac, so removing it reverses exactly that. */
+export interface AccessRecord {
+  /** The runtime root its `~/.ssh` blocks name in their BEGIN and END lines. */
+  marker: string;
+  /** The hash of the Provider key it configured as the backend. */
+  providerKey: string;
+  files: string[];
+  appended: { path: string; created: boolean; newline: boolean }[];
+  directory?: string;
+  backup?: string;
+}
 export interface Runtime {
   revision: number;
   settings: Settings;
@@ -93,6 +104,7 @@ export interface Runtime {
   actors: Record<string, Bootstrap>;
   journal: Record<string, Provision>;
   issuedCredentials: Record<string, string>;
+  access?: AccessRecord;
 }
 
 /** The single process owns synchronous, atomic updates to its private runtime volume. */
