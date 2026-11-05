@@ -123,7 +123,91 @@ test("server composition supplies the Setup-owned guard to the actual Supervisor
     config: { approvalAuthority: "desktop" },
     submissions: [],
   };
+  server.store.data.probes.desktop = {
+    state: "ready",
+    code: "OPERATOR_CONFIRMED_DESKTOP",
+    revision: server.store.data.revision,
+    checkedAt: new Date().toISOString(),
+  };
   server.actors.launch("actor");
   assert.equal(await observed, "EXECUTION_NOT_ADMITTED");
   assert.equal(starts, 0);
 });
+
+for (const desktop of ["unconfirmed", "confirmed", "stale"] as const)
+  test(`an Actor answered by Codex Desktop with ${desktop} Desktop ${desktop === "confirmed" ? "is admitted" : "stays unadmitted, saying why"}`, async (t) => {
+    const root = mkdtempSync(join(tmpdir(), "orgactor-desktop-gate-"));
+    t.after(() => rmSync(root, { recursive: true, force: true }));
+    const server = await startServer({ root, port: 0 });
+    t.after(() => server.close());
+    const original = ActorController.prototype.open;
+    const close = ActorController.prototype.close;
+    t.after(() => {
+      ActorController.prototype.open = original;
+      ActorController.prototype.close = close;
+    });
+    let opens = 0;
+    let closes = 0;
+    ActorController.prototype.open = async () => {
+      opens++;
+    };
+    ActorController.prototype.close = async () => {
+      closes++;
+    };
+    server.backend.get = async () =>
+      new AppServerAdapter({
+        request: async (method: string, params: any) => {
+          assert.equal(method, "thread/read");
+          return { thread: { id: params.threadId, cwd: "/owned" } };
+        },
+      } as any);
+    server.store.data.settings.workspaceRoot = "/owned";
+    const bootstrap = {
+      actorId: "actor",
+      hubUrl: "http://unused",
+      threadId: "",
+      bridgeToken: "private",
+      enabled: true,
+      config: { approvalAuthority: "desktop" as const },
+      submissions: [],
+    };
+    server.store.data.actors.actor = bootstrap;
+    // Creating its native session needs the Actor's Hub tools, so it is admitted for that.
+    server.actors.launch("actor");
+    assert.equal(opens, 1);
+    bootstrap.threadId = "thread";
+    if (desktop === "stale") {
+      server.store.data.probes.desktop = {
+        state: "ready",
+        code: "OPERATOR_CONFIRMED_DESKTOP",
+        revision: server.store.data.revision - 1,
+        checkedAt: new Date().toISOString(),
+      };
+    }
+    server.actors.launch("actor");
+    assert.equal(server.actors.actors.has("actor"), false);
+    assert.equal(closes, 1);
+    const state = async () => {
+      const response = await fetch(`${server.url}/api/state`);
+      return (await response.json()).actors[0].connectionState;
+    };
+    assert.equal(await state(), "awaiting-desktop");
+    if (desktop !== "confirmed") return;
+    const confirmed = await fetch(`${server.url}/api/setup/desktop-confirmation`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        threadId: "thread",
+        workspaceRoot: "/owned",
+        observation: "rendered",
+      }),
+    });
+    assert.equal(confirmed.status, 200);
+    assert.equal(server.actors.actors.has("actor"), true);
+    assert.equal(opens, 2);
+    assert.notEqual(await state(), "awaiting-desktop");
+    // The workspace check cannot see Desktop, so it keeps the confirmation and the Actor.
+    await fetch(`${server.url}/api/setup/probes/desktop`, { method: "POST" });
+    assert.equal(server.store.data.probes.desktop?.code, "OPERATOR_CONFIRMED_DESKTOP");
+    assert.equal(server.actors.actors.has("actor"), true);
+  });

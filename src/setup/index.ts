@@ -117,6 +117,10 @@ export class SetupService {
   }
   async probe(stage: ProbeStage): Promise<Probe> {
     const revision = this.store.data.revision;
+    // The workspace check cannot see Desktop, so it never replaces the operator's confirmation.
+    const confirmed = this.store.data.probes.desktop;
+    if (stage === "desktop" && confirmed?.state === "ready" && confirmed.revision === revision)
+      return confirmed;
     let result: Omit<Probe, "revision" | "checkedAt">;
     try {
       result = await this.inspect(stage);

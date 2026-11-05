@@ -68,17 +68,19 @@ function Field({ label, children, help }: { label: string; children: ReactNode; 
     </div>
   );
 }
-function Status({ probe }: { probe?: Probe }) {
+/** A check's state; `missing` says what to do while it isn't ready. */
+function Status({ probe, missing }: { probe?: Probe; missing?: string }) {
   return (
     <Badge
       variant={probe?.state === "ready" ? "secondary" : "outline"}
       className={probe?.state === "ready" ? "status-ready" : ""}
     >
       {probe?.state === "ready" ? <CheckCircle2 /> : <CircleHelp />}
-      {probe ? probe.state : "Not checked"}
+      {probe?.state === "ready" ? probe.state : (missing ?? (probe ? probe.state : "Not checked"))}
     </Badge>
   );
 }
+const confirmInDesktop = "Confirm the session in Codex Desktop";
 const stages: { id: ProbeStage; title: string; description: string }[] = [
   { id: "backend", title: "Codex connection", description: "Reach the shared app server." },
   { id: "account", title: "ChatGPT plan", description: "Verify sign-in and included usage." },
@@ -203,7 +205,10 @@ function SetupView(p: SetupFeature) {
                   <div className="min-w-0 flex-1">
                     <h3>{s.title}</h3>
                     <p>{s.description}</p>
-                    <Status probe={p.state.probes[s.id]} />
+                    <Status
+                      probe={p.state.probes[s.id]}
+                      missing={s.id === "desktop" ? confirmInDesktop : undefined}
+                    />
                     {p.state.probes[s.id] ? (
                       <p className="probe-code">
                         {p.state.probes[s.id]?.code.replaceAll("_", " ").toLowerCase()}
@@ -225,7 +230,8 @@ function SetupView(p: SetupFeature) {
           </Card>
           <p className="muted text-sm">
             In Codex Desktop, open Settings → Connections → SSH and use the exact workspace root
-            saved above. Open an attached Actor's session to confirm it appears.
+            saved above. Open an attached Actor's session to confirm it appears. Actors that Codex
+            Desktop answers for stay offline in the Hub until you confirm.
           </p>
           <Field label="Session visible in Desktop">
             <Input
@@ -308,6 +314,7 @@ function ActorsView(p: ActorsFeature) {
                       <TableHead>Actor</TableHead>
                       <TableHead>Connection</TableHead>
                       <TableHead>Queue</TableHead>
+                      <TableHead>Requests</TableHead>
                       <TableHead>
                         <span className="sr-only">Controls</span>
                       </TableHead>
@@ -329,11 +336,17 @@ function ActorsView(p: ActorsFeature) {
                                 connecting: "Connecting",
                                 paused: "Paused",
                                 suspended: "Suspended",
+                                "awaiting-desktop": confirmInDesktop,
                               }[a.connectionState]
                             }
                           </Badge>
                         </TableCell>
                         <TableCell>{a.queued}</TableCell>
+                        <TableCell>
+                          {a.requests.length
+                            ? `${a.requests.length} to answer in ${a.approvalAuthority === "desktop" ? "Codex Desktop" : "AgentOrg"}`
+                            : null}
+                        </TableCell>
                         <TableCell>
                           <Button
                             variant="ghost"
@@ -368,6 +381,13 @@ function ActorsView(p: ActorsFeature) {
               </CardDescription>
             </CardHeader>
             <CardContent className="stack">
+              {actor.connectionState === "awaiting-desktop" ? (
+                <div role="status" className="notice">
+                  {confirmInDesktop}: open it in Codex Desktop, then confirm session{" "}
+                  {actor.threadId} in Setup. Until then this Actor stays offline in the Hub, and
+                  messages to it wait there.
+                </div>
+              ) : null}
               <Field label="Approval owner">
                 <Select
                   value={actor.approvalAuthority}
@@ -647,7 +667,7 @@ export const views = {
               </dd>
               <dt>Desktop mapping</dt>
               <dd>
-                <Status probe={p.state.probes.desktop} />
+                <Status probe={p.state.probes.desktop} missing={confirmInDesktop} />
               </dd>
             </dl>
             <div className="actions">
