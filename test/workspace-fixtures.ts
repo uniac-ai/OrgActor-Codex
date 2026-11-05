@@ -21,7 +21,6 @@ export const form = (input: Pick<Form, "title" | "fields">, extra: Partial<Form>
     createdAt: at,
     status: "open",
     responses: {},
-    raises: [],
     revision: 1,
     updatedAt: at,
     ...input,

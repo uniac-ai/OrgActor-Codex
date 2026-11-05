@@ -44,7 +44,7 @@ export function requestReview(method: string, params: any): string {
     return `Codex requests file-change approval.\nGrant root: ${params.grantRoot ?? "the current workspace"}${reason}`;
   return params.message ?? "Codex requests input.";
 }
-/** A manager's answer can grant only the native request's own requested permissions. */
+/** An approval's answer can grant only the native request's own requested permissions. */
 export function responseFor(method: string, params: any, choice: string, content: unknown): object {
   if (["item/commandExecution/requestApproval", "item/fileChange/requestApproval"].includes(method))
     return { decision: z.enum(["accept", "decline", "cancel"]).parse(choice) };
