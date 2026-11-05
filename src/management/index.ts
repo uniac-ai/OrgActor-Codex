@@ -3,11 +3,14 @@ import { z } from "zod";
 import { type ActorSupervisor, waitsForDesktop } from "../actors/supervisor.js";
 import type { CodexProvider } from "../provider/index.js";
 import type { RuntimeStore } from "../runtime/index.js";
+import type { GuideService } from "../setup/guide.js";
 import type { SetupService } from "../setup/index.js";
 import {
+  AccessApply,
   Attach,
   Authority,
   Fault,
+  FolderChoice,
   Input,
   ProbeStage,
   type PublicState,
@@ -20,6 +23,7 @@ export function management(
   setup: SetupService,
   provider: CodexProvider,
   actors: ActorSupervisor,
+  guide: GuideService,
 ) {
   const app = new Hono();
   app.use("/api/*", async (c, next) => {
@@ -93,6 +97,25 @@ export function management(
     await setup.cancelLogin(c.req.param("id"));
     return c.json({ cancelled: true });
   });
+  app.get("/api/setup/guide", async (c) => c.json(await guide.check()));
+  app.post("/api/setup/guide/check", async (c) => c.json(await guide.check(true)));
+  app.post("/api/setup/guide/access/plan", (c) => c.json(guide.planAccess()));
+  app.put("/api/setup/guide/access", async (c) => {
+    await guide.applyAccess(AccessApply.parse(await c.req.json()).planId);
+    return c.json({ revision: store.data.revision, settings: setup.publicSettings() });
+  });
+  app.delete("/api/setup/guide/access", async (c) => {
+    await guide.removeAccess();
+    return c.json({ revision: store.data.revision, settings: setup.publicSettings() });
+  });
+  app.put("/api/setup/guide/folder", async (c) => {
+    await guide.chooseFolder(FolderChoice.parse(await c.req.json()).path);
+    return c.json({ revision: store.data.revision, settings: setup.publicSettings() });
+  });
+  app.post("/api/setup/guide/folder", (c) => {
+    guide.createFolder();
+    return c.json({ created: true });
+  });
   app.put("/api/provider", async (c) => {
     const { enabled } = z.strictObject({ enabled: z.boolean() }).parse(await c.req.json());
     if (enabled && !store.data.settings.hub)
@@ -102,6 +125,7 @@ export function management(
   });
   app.post("/api/actors", async (c) => {
     const attached = Attach.parse(await c.req.json());
+    await guide.admitAttach();
     await provider.create(attached);
     return c.json({ actorId: attached.actorId }, 201);
   });
@@ -125,6 +149,10 @@ export function management(
     }
     if (data.enabled !== undefined) await actors.setEnabled(id, data.enabled);
     return c.json({ updated: true });
+  });
+  app.delete("/api/actors/:id", async (c) => {
+    await provider.detach(c.req.param("id"));
+    return c.json({ detached: true });
   });
   app.post("/api/actors/:id/inputs", async (c) => {
     const data = Input.parse(await c.req.json());

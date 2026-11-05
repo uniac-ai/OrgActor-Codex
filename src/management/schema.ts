@@ -107,6 +107,48 @@ export interface PublicState {
   };
   actors: ActorSnapshot[];
 }
+/** The guided setup on this Mac, in order. */
+export const STEPS = [
+  "hub",
+  "login",
+  "access",
+  "desktop",
+  "folder",
+  "actor",
+  "session",
+  "tools",
+] as const;
+export type StepId = (typeof STEPS)[number];
+export interface GuideStep {
+  id: StepId;
+  state: "done" | "missing" | "broken" | "waiting";
+  /** What was checked and what it saw; a waiting step's is `WAITING`, naming the step it waits on. */
+  code: string;
+  details?: Record<string, unknown>;
+}
+export interface Guide {
+  /** Whether this Provider runs on a Mac the guide can set up; otherwise only other setups apply. */
+  available: boolean;
+  checkedAt: string;
+  folder: { path?: string; suggested: string };
+  steps: GuideStep[];
+}
+/** One item of the review shown before anything is written. */
+export type AccessWrite =
+  | { action: "directory"; path: string; mode: "0700" }
+  | { action: "key"; path: string; mode: "0600"; fingerprint: string }
+  | { action: "file"; path: string; mode: "0600" | "0700"; lines: string[] }
+  | { action: "backup"; path: string; from: string }
+  | { action: "append"; path: string; lines: string[]; creates: boolean }
+  | { action: "backend"; host: string; port: number; user: string; fingerprint: string };
+
+export interface AccessPlan {
+  id: string;
+  writes: AccessWrite[];
+}
+
+export const AccessApply = z.strictObject({ planId: z.string().min(1).max(128) });
+export const FolderChoice = z.strictObject({ path: z.string().startsWith("/").max(1024) });
 export class Fault extends Error {
   native?: { method: string; code: number; reason?: "missing-rollout" };
   constructor(
