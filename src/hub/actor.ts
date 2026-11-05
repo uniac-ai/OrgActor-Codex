@@ -33,7 +33,7 @@ class Direction implements Transport {
   }
 }
 export class ActorHubSession {
-  readonly client = new Client({ name: "orgactor-codex", version: "0.0.1" });
+  readonly client = new Client({ name: "orgactor-codex", version: "0.0.2" });
   readonly connection: HubConnection;
   tools: Tool[] = [];
   constructor(url: string) {

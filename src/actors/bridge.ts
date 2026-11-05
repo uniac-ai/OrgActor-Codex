@@ -63,7 +63,7 @@ export class SessionMcpBridge {
       if (transport.sessionId) this.sessions.delete(transport.sessionId);
     };
     const server = new Server(
-      { name: "org", version: "0.0.1" },
+      { name: "org", version: "0.0.2" },
       {
         capabilities: { tools: {} },
         instructions: instructions(bootstrap.actorId),
