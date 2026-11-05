@@ -144,6 +144,8 @@ export interface AccessInspection {
 }
 
 const quotable = (path: string) => !/["'\\%\n\r]/.test(path);
+/** The first `Host` or `Match` line: ssh takes each option's first value, so the block goes there. */
+const firstBlock = (lines: string[]) => lines.findIndex((line) => /^\s*(host|match)\s/i.test(line));
 const sh = (path: string) => (/^[\w./+-]+$/.test(path) ? path : `'${path}'`);
 const conf = (path: string) => (/\s/.test(path) ? `"${path}"` : path);
 
@@ -152,7 +154,14 @@ const conf = (path: string) => (/\s/.test(path) ? `"${path}"` : path);
  * blocks in `~/.ssh`, written only on the person's consent and removed exactly.
  */
 export class ThisMacAccess {
-  private pending?: { id: string; provider: Key; desktop: Key; writes: AccessWrite[] };
+  private pending?: {
+    id: string;
+    provider: Key;
+    desktop: Key;
+    writes: AccessWrite[];
+    /** What the review saw, so a change before the person confirms makes it stale. */
+    seen: string;
+  };
   constructor(
     private store: RuntimeStore,
     readonly mac: ThisMac,
@@ -166,6 +175,26 @@ export class ThisMacAccess {
       knownHosts: join(this.dir, "known_hosts"),
       shell: join(this.dir, "desktop-shell"),
     };
+  }
+  /** The Provider's own key and known host, where its SSH backend connects from. */
+  private get backendFiles() {
+    return {
+      key: join(this.store.root, "ssh-key"),
+      knownHosts: join(this.store.root, "known-hosts"),
+    };
+  }
+  private seen(): string {
+    const { dir, authorizedKeys, config } = this.ssh;
+    return hash(
+      JSON.stringify([
+        existsSync(dir),
+        existsSync(authorizedKeys) && read(authorizedKeys),
+        existsSync(config) && read(config),
+        this.codex(),
+        this.hostKey(),
+        Object.values(this.files).map((path) => existsSync(path)),
+      ]),
+    );
   }
   private get ssh() {
     const dir = join(this.mac.home, ".ssh");
@@ -237,11 +266,39 @@ export class ThisMacAccess {
       },
     };
   }
-  /** Two live checks: the Provider's key reaches the Codex proxy, and Desktop's key runs `codex`. */
-  async test(): Promise<{ provider: boolean; desktop?: string }> {
+  /**
+   * Live checks: ssh resolves `this-mac` to the block's own values, the Provider's key reaches the
+   * Codex proxy, and Desktop's key runs `codex`.
+   */
+  async test(): Promise<{ overridden: string[]; provider: boolean; desktop?: string }> {
     const backend = this.store.data.settings.backend;
     if (backend?.kind !== "ssh" || !backend.privateKey || !backend.knownHosts)
-      return { provider: false };
+      return { overridden: [], provider: false };
+    const resolved = await this.mac.ssh(["-G", "-F", this.ssh.config, ALIAS]);
+    const values = resolved.stdout.split("\n").map((line) => {
+      const at = line.indexOf(" ");
+      return [line.slice(0, at), line.slice(at + 1)];
+    });
+    const value = (key: string) => values.find(([k]) => k === key)?.[1];
+    const expected: Record<string, string> = {
+      hostname: "127.0.0.1",
+      port: String(this.mac.sshPort),
+      user: this.mac.user,
+      identitiesonly: "yes",
+      identityagent: "none",
+      stricthostkeychecking: "true",
+      batchmode: "yes",
+      forwardagent: "no",
+    };
+    const overridden = [
+      ...Object.keys(expected).filter((key) => value(key) !== expected[key]),
+      ...(values.some(([k, v]) => k === "identityfile" && v === this.files.desktop)
+        ? []
+        : ["identityfile"]),
+      ...(value("userknownhostsfile")?.startsWith(this.files.knownHosts)
+        ? []
+        : ["userknownhostsfile"]),
+    ];
     const provider = await this.mac.ssh([
       "-T",
       "-F",
@@ -268,6 +325,7 @@ export class ThisMacAccess {
     ]);
     const version = desktop.stdout.trim().split("\n")[0]?.slice(0, 80);
     return {
+      overridden: resolved.code === 0 ? overridden : ["config"],
       // ssh exits 255 for its own failures; anything else ran the forced Codex proxy.
       provider: provider.code !== 255,
       ...(desktop.code === 0 && version ? { desktop: version } : {}),
@@ -290,7 +348,20 @@ export class ThisMacAccess {
     const { desktop: desktopKey, knownHosts, shell } = this.files;
     const local = 'from="127.0.0.1,::1"';
     const ssh = this.ssh;
+    const before = read(ssh.config).split("\n")[firstBlock(read(ssh.config).split("\n"))];
     const writes: AccessWrite[] = [
+      {
+        action: "key",
+        path: this.backendFiles.key,
+        mode: "0600",
+        fingerprint: provider.fingerprint,
+      },
+      {
+        action: "file",
+        path: this.backendFiles.knownHosts,
+        mode: "0600",
+        lines: [this.knownHosts(hostKey).trim()],
+      },
       { action: "key", path: desktopKey, mode: "0600", fingerprint: desktop.fingerprint },
       {
         action: "file",
@@ -321,7 +392,7 @@ export class ThisMacAccess {
         lines: [
           this.markers[0],
           `restrict,${local},command="exec ${sh(codex)} app-server proxy" ${provider.public} orgactor-codex provider`,
-          `${local},no-agent-forwarding,no-X11-forwarding,no-user-rc,command="${sh(shell)}" ${desktop.public} orgactor-codex desktop`,
+          `${local},no-agent-forwarding,no-port-forwarding,no-X11-forwarding,no-user-rc,command="${sh(shell)}" ${desktop.public} orgactor-codex desktop`,
           this.markers[1],
         ],
       },
@@ -338,6 +409,7 @@ export class ThisMacAccess {
         action: "append",
         path: ssh.config,
         creates: !existsSync(ssh.config),
+        ...(before === undefined ? {} : { before }),
         lines: [
           this.markers[0],
           `Host ${ALIAS}`,
@@ -362,13 +434,13 @@ export class ThisMacAccess {
         fingerprint: provider.fingerprint,
       },
     ];
-    this.pending = { id: token(), provider, desktop, writes };
+    this.pending = { id: token(), provider, desktop, writes, seen: this.seen() };
     return { id: this.pending.id, writes };
   }
   /** Write the reviewed plan; returns the Provider's backend for the caller to configure. */
   apply(id: string): { privateKey: string; knownHosts: string; port: number; user: string } {
     const plan = this.pending;
-    if (!plan || plan.id !== id)
+    if (!plan || plan.id !== id || plan.seen !== this.seen())
       throw new Fault("PLAN_STALE", "Review the SSH access again before writing it.");
     this.pending = undefined;
     const record: AccessRecord = {
@@ -382,7 +454,11 @@ export class ThisMacAccess {
       for (const write of plan.writes) {
         if (write.action === "key" || write.action === "file") {
           const text =
-            write.action === "key" ? plan.desktop.private : `${write.lines.join("\n")}\n`;
+            write.action === "file"
+              ? `${write.lines.join("\n")}\n`
+              : write.path === this.files.desktop
+                ? plan.desktop.private
+                : plan.provider.private;
           writeFileSync(write.path, text, { mode: Number.parseInt(write.mode, 8) });
           chmodSync(write.path, Number.parseInt(write.mode, 8));
           record.files.push(write.path);
@@ -396,11 +472,19 @@ export class ThisMacAccess {
         } else if (write.action === "append") {
           const created = !existsSync(write.path);
           const text = read(write.path);
-          const newline = text.length > 0 && !text.endsWith("\n");
-          writeFileSync(write.path, `${text}${newline ? "\n" : ""}${write.lines.join("\n")}\n`, {
-            mode: 0o600,
-          });
-          record.appended.push({ path: write.path, created, newline });
+          const lines = text.split("\n");
+          const at = write.before === undefined ? -1 : firstBlock(lines);
+          if (at >= 0) {
+            lines.splice(at, 0, ...write.lines);
+            writeFileSync(write.path, lines.join("\n"));
+            record.appended.push({ path: write.path, created, newline: false });
+          } else {
+            const newline = text.length > 0 && !text.endsWith("\n");
+            writeFileSync(write.path, `${text}${newline ? "\n" : ""}${write.lines.join("\n")}\n`, {
+              mode: 0o600,
+            });
+            record.appended.push({ path: write.path, created, newline });
+          }
         }
       }
     } catch (error) {
@@ -422,10 +506,21 @@ export class ThisMacAccess {
       user: this.mac.user,
     };
   }
-  /** Undo exactly what `apply` wrote, keeping anything the person added since. */
+  /**
+   * Undo exactly what `apply` wrote, keeping anything the person added since. Without its record
+   * (a runtime replaced at the same path), the blocks naming this runtime and its `ssh/` files go.
+   */
   remove(): void {
-    const record = this.store.data.access;
-    if (!record) return;
+    const record: AccessRecord = this.store.data.access ?? {
+      marker: this.store.root,
+      providerKey: "",
+      files: Object.values(this.files),
+      appended: [this.ssh.authorizedKeys, this.ssh.config].map((path) => ({
+        path,
+        created: false,
+        newline: false,
+      })),
+    };
     const begin = `# BEGIN OrgActor-Codex ${record.marker}`;
     const end = `# END OrgActor-Codex ${record.marker}`;
     for (const { path, created, newline } of record.appended) {
@@ -443,8 +538,8 @@ export class ThisMacAccess {
     if (record.backup && read(this.ssh.config) === read(record.backup))
       rmSync(record.backup, { force: true });
     for (const path of record.files) rmSync(path, { force: true });
-    if (record.directory && existsSync(record.directory) && !readdirSync(record.directory).length)
-      rmdirSync(record.directory);
+    for (const dir of [this.dir, record.directory])
+      if (dir && existsSync(dir) && !readdirSync(dir).length) rmdirSync(dir);
     delete this.store.data.access;
     this.store.save();
   }

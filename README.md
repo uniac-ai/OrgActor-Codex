@@ -12,7 +12,7 @@ npm run build
 npm start
 ```
 
-Open `http://127.0.0.1:8787/` directly. The deployment owns external access to the console and ManagementApi. `ORGACTOR_HOME` selects the private persistent directory (default `.runtime`); `HOST` and `PORT` select the listener (default `127.0.0.1:8787`). Runtime secrets and execution records remain on the persistent volume.
+Open `http://127.0.0.1:8787/` directly. The deployment owns external access to the console and ManagementApi; the API answers only requests addressed to 127.0.0.1, localhost or [::1], so a proxy in front must pass one of those as the Host. `ORGACTOR_HOME` selects the private persistent directory (default `.runtime`); `HOST` and `PORT` select the listener (default `127.0.0.1:8787`). Runtime secrets and execution records remain on the persistent volume.
 
 Configure the Hub binding on the server with `HUB_URL` and `PROVIDER_ID` together, plus optional `PROVIDER_CREDENTIAL`. Programmatic composition accepts the same `{url, providerId, credential?}` as `startServer({root, hub, ...})`. The validated binding is retained in the private runtime; later starts can use that binding without environment overrides. Retained execution records prevent retargeting it. Hub URL and identity are read-only in the console, and credentials are never returned.
 

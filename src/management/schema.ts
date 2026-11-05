@@ -131,6 +131,8 @@ export interface Guide {
   available: boolean;
   /** Whether the Provider's backend is the guide's SSH access, so its order governs attaching. */
   inUse: boolean;
+  /** Whether any of the guide's SSH access is in place, whatever step the guide is on. */
+  accessPresent: boolean;
   checkedAt: string;
   folder: { path?: string; suggested: string };
   steps: GuideStep[];
@@ -141,7 +143,8 @@ export type AccessWrite =
   | { action: "key"; path: string; mode: "0600"; fingerprint: string }
   | { action: "file"; path: string; mode: "0600" | "0700"; lines: string[] }
   | { action: "backup"; path: string; from: string }
-  | { action: "append"; path: string; lines: string[]; creates: boolean }
+  /** Added at the end, or before the line `before` names (the file's first Host or Match). */
+  | { action: "append"; path: string; lines: string[]; creates: boolean; before?: string }
   | { action: "backend"; host: string; port: number; user: string; fingerprint: string };
 
 export interface AccessPlan {
