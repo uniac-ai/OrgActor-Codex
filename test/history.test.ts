@@ -6,7 +6,7 @@ import { join } from "node:path";
 import test from "node:test";
 import WebSocket, { WebSocketServer } from "ws";
 import { ActorController } from "../src/actors/controller.js";
-import { AppServerAdapter, NativeProtocol, SshAdapter } from "../src/codex/index.js";
+import { AppServerAdapter, NativeProtocol } from "../src/codex/index.js";
 import { RuntimeStore } from "../src/runtime/index.js";
 
 async function fixture(t: any) {
@@ -84,80 +84,78 @@ async function fixture(t: any) {
   return { protocol, state, empty };
 }
 
-for (const Adapter of [SshAdapter, AppServerAdapter])
-  test(`${Adapter.name} reconciles a fresh unnamed session before any user message or presentation rename`, async (t) => {
-    const { protocol, state } = await fixture(t);
-    const native = new Adapter(protocol);
-    const threadId = await native.create({
-      cwd: "/owned",
-      bridgeUrl: "http://127.0.0.1/mcp",
-      bridgeToken: "BRIDGE_TEST_ONLY",
-    });
-    await native.resume(threadId, {
-      bridgeUrl: "http://127.0.0.1/mcp",
-      bridgeToken: "BRIDGE_TEST_ONLY",
-      initial: true,
-    });
-    const root = mkdtempSync(join(tmpdir(), "orgactor-empty-history-"));
-    t.after(() => rmSync(root, { recursive: true, force: true }));
-    const store = new RuntimeStore(root);
-    const bootstrap = {
-      actorId: "actor",
-      threadId,
-      hubUrl: "http://unused",
-      bridgeToken: "BRIDGE_TEST_ONLY",
-      enabled: true,
-      config: { approvalAuthority: "desktop" as const },
-      submissions: [] as any[],
-    };
-    store.data.actors.actor = bootstrap;
-    const actor = new ActorController(bootstrap, store, async () => native);
-    actor.adapter = native;
-    await actor.reconcile();
-    assert.equal(actor.snapshot().observation, "available");
-    assert.equal(actor.turnId, null);
-    assert.equal(state.mode, "legacy");
-    assert.ok(!state.calls.some((c) => ["thread/name/set", "turn/start"].includes(c.method)));
-    assert.ok(!state.calls.some((c) => c.method === "thread/resume"));
-    state.materialized = true;
-    state.path = "/owned/history.jsonl";
-    state.turns = [
-      {
-        id: "turn-owned",
-        status: "completed",
-        items: [
-          { type: "userMessage", clientId: "known" },
-          { type: "agentMessage", text: "actual" },
-        ],
-      },
-    ];
-    bootstrap.submissions.push({
-      id: "known",
-      text: "task",
-      from: "operator",
-      cause: null,
-      state: "unknown",
-    });
-    await actor.reconcile();
-    assert.equal(bootstrap.submissions[0].result?.status, "completed");
-    assert.equal(bootstrap.submissions[0].result?.output, "actual");
+test(`AppServerAdapter reconciles a fresh unnamed session before any user message or presentation rename`, async (t) => {
+  const { protocol, state } = await fixture(t);
+  const native = new AppServerAdapter(protocol);
+  const threadId = await native.create({
+    cwd: "/owned",
+    bridgeUrl: "http://127.0.0.1/mcp",
+    bridgeToken: "BRIDGE_TEST_ONLY",
   });
+  await native.resume(threadId, {
+    bridgeUrl: "http://127.0.0.1/mcp",
+    bridgeToken: "BRIDGE_TEST_ONLY",
+    initial: true,
+  });
+  const root = mkdtempSync(join(tmpdir(), "orgactor-empty-history-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const store = new RuntimeStore(root);
+  const bootstrap = {
+    actorId: "actor",
+    threadId,
+    hubUrl: "http://unused",
+    bridgeToken: "BRIDGE_TEST_ONLY",
+    enabled: true,
+    config: { approvalAuthority: "desktop" as const },
+    submissions: [] as any[],
+  };
+  store.data.actors.actor = bootstrap;
+  const actor = new ActorController(bootstrap, store, async () => native);
+  actor.adapter = native;
+  await actor.reconcile();
+  assert.equal(actor.snapshot().observation, "available");
+  assert.equal(actor.turnId, null);
+  assert.equal(state.mode, "legacy");
+  assert.ok(!state.calls.some((c) => ["thread/name/set", "turn/start"].includes(c.method)));
+  assert.ok(!state.calls.some((c) => c.method === "thread/resume"));
+  state.materialized = true;
+  state.path = "/owned/history.jsonl";
+  state.turns = [
+    {
+      id: "turn-owned",
+      status: "completed",
+      items: [
+        { type: "userMessage", clientId: "known" },
+        { type: "agentMessage", text: "actual" },
+      ],
+    },
+  ];
+  bootstrap.submissions.push({
+    id: "known",
+    text: "task",
+    from: "operator",
+    cause: null,
+    state: "unknown",
+  });
+  await actor.reconcile();
+  assert.equal(bootstrap.submissions[0].result?.status, "completed");
+  assert.equal(bootstrap.submissions[0].result?.output, "actual");
+});
 
-for (const Adapter of [SshAdapter, AppServerAdapter])
-  test(`${Adapter.name} pre-approves the Actor's own Hub Tools when it starts and resumes a session`, async (t) => {
-    const { protocol, state } = await fixture(t);
-    const binding = { bridgeUrl: "http://127.0.0.1/mcp", bridgeToken: "BRIDGE_TEST_ONLY" };
-    const threadId = await new Adapter(protocol).create({ cwd: "/owned", ...binding });
-    state.materialized = true;
-    await new Adapter(protocol).resume(threadId, binding);
-    const call = (method: string) => state.calls.find((c) => c.method === method);
-    assert.equal(call("thread/start")?.params.approvalPolicy, "on-request");
-    for (const method of ["thread/start", "thread/resume"])
-      assert.equal(
-        call(method)?.params.config["mcp_servers.org"].default_tools_approval_mode,
-        "approve",
-      );
-  });
+test(`AppServerAdapter pre-approves the Actor's own Hub Tools when it starts and resumes a session`, async (t) => {
+  const { protocol, state } = await fixture(t);
+  const binding = { bridgeUrl: "http://127.0.0.1/mcp", bridgeToken: "BRIDGE_TEST_ONLY" };
+  const threadId = await new AppServerAdapter(protocol).create({ cwd: "/owned", ...binding });
+  state.materialized = true;
+  await new AppServerAdapter(protocol).resume(threadId, binding);
+  const call = (method: string) => state.calls.find((c) => c.method === method);
+  assert.equal(call("thread/start")?.params.approvalPolicy, "on-request");
+  for (const method of ["thread/start", "thread/resume"])
+    assert.equal(
+      call(method)?.params.config["mcp_servers.org"].default_tools_approval_mode,
+      "approve",
+    );
+});
 
 test("initial reuse requires the creating adapter, unchanged binding, empty identity and no submitted request", async (t) => {
   const { protocol, state } = await fixture(t);

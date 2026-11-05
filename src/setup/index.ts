@@ -1,8 +1,7 @@
-import { z } from "zod";
 import type { AppServerAdapter, CodexAdapter, CodexBackend } from "../codex/index.js";
 import { ConnectorSettings, Fault, type Probe, type ProbeStage } from "../management/schema.js";
 import type { CodexProvider } from "../provider/index.js";
-import { hash, type RuntimeStore, token } from "../runtime/index.js";
+import { type RuntimeStore, token } from "../runtime/index.js";
 
 export class SetupService {
   private loginOwner?: { key: string; loginId?: string; unwatch?: () => void };
@@ -62,10 +61,6 @@ export class SetupService {
       );
     const old = this.store.data.settings;
     const next = { ...ConnectorSettings.parse(raw), ...(old.hub ? { hub: old.hub } : {}) };
-    if (next.backend?.kind === "ssh" && old.backend?.kind === "ssh") {
-      next.backend.privateKey ??= old.backend.privateKey;
-      next.backend.knownHosts ??= old.backend.knownHosts;
-    }
     if (
       (Object.keys(this.store.data.journal).length || Object.keys(this.store.data.actors).length) &&
       JSON.stringify(next) !== JSON.stringify(old)
@@ -89,27 +84,9 @@ export class SetupService {
     this.backend.close();
   }
   publicSettings(): any {
-    const { backend, hub, ...rest } = this.store.data.settings;
+    const { hub, ...rest } = this.store.data.settings;
     return {
       ...rest,
-      ...(backend
-        ? {
-            backend:
-              backend.kind === "ssh"
-                ? {
-                    kind: backend.kind,
-                    host: backend.host,
-                    port: backend.port,
-                    user: backend.user,
-                    privateKeyPresent: !!backend.privateKey,
-                    knownHostsPresent: !!backend.knownHosts,
-                    ...(backend.privateKey
-                      ? { keyFingerprint: hash(backend.privateKey).slice(0, 16) }
-                      : {}),
-                  }
-                : backend,
-          }
-        : {}),
       ...(hub
         ? { hub: { url: hub.url, providerId: hub.providerId, credentialPresent: !!hub.credential } }
         : {}),
@@ -117,10 +94,6 @@ export class SetupService {
   }
   async probe(stage: ProbeStage): Promise<Probe> {
     const revision = this.store.data.revision;
-    // The workspace check cannot see Desktop, so it never replaces the operator's confirmation.
-    const confirmed = this.store.data.probes.desktop;
-    if (stage === "desktop" && confirmed?.state === "ready" && confirmed.revision === revision)
-      return confirmed;
     let result: Omit<Probe, "revision" | "checkedAt">;
     try {
       result = await this.inspect(stage);
@@ -187,26 +160,6 @@ export class SetupService {
         },
       };
     }
-    if (stage === "desktop") {
-      const root = this.store.data.settings.workspaceRoot;
-      if (!root) return { state: "unconfigured", code: "WORKSPACE_ROOT_REQUIRED" };
-      const projects = await adapter.protocol.request("project/list", { limit: 100 });
-      const matches =
-        projects.data?.filter((p: any) =>
-          p.roots?.some((r: any) => (typeof r === "string" ? r : r.path) === root),
-        ) ?? [];
-      return {
-        state: "unconfigured",
-        code: "DESKTOP_OBSERVATION_REQUIRED",
-        details: {
-          workspaceRoot: root,
-          backendProjectMatch: matches.length > 0,
-          renderedVisibility: "unverified",
-          instruction:
-            "In Codex Desktop, open this exact saved SSH workspace root (or local project), then verify the managed session appears and updates. Backend project matching alone does not verify Desktop visibility.",
-        },
-      };
-    }
     const url = this.store.data.settings.bridgeUrl;
     if (!url) return { state: "unconfigured", code: "BRIDGE_URL_REQUIRED" };
     for (const actor of Object.values(this.store.data.actors))
@@ -240,41 +193,6 @@ export class SetupService {
   challenge(value: string): boolean {
     const expiry = this.challenges.get(value);
     return expiry !== undefined && expiry > Date.now();
-  }
-  async confirmDesktop(raw: unknown): Promise<Probe> {
-    const confirmation = z
-      .strictObject({
-        threadId: z.string().min(1),
-        workspaceRoot: z.string().startsWith("/"),
-        observation: z.enum(["catalog", "rendered"]),
-      })
-      .parse(raw);
-    const revision = this.store.data.revision;
-    if (
-      confirmation.workspaceRoot !== this.store.data.settings.workspaceRoot ||
-      !Object.values(this.store.data.actors).some((a) => a.threadId === confirmation.threadId)
-    )
-      throw new Fault(
-        "DESKTOP_SCOPE_MISMATCH",
-        "Choose an attached Actor session in the configured workspace.",
-      );
-    const adapter = await this.backend.get();
-    const native = await adapter.read(confirmation.threadId);
-    if (native.thread?.cwd !== confirmation.workspaceRoot || revision !== this.store.data.revision)
-      throw new Fault(
-        "DESKTOP_SCOPE_MISMATCH",
-        "The session no longer matches this setup configuration.",
-      );
-    const report: Probe = {
-      state: "ready",
-      code: "OPERATOR_CONFIRMED_DESKTOP",
-      revision,
-      checkedAt: new Date().toISOString(),
-      details: { source: "operator", ...confirmation },
-    };
-    this.store.data.probes.desktop = report;
-    this.store.save();
-    return report;
   }
   async login(): Promise<{ loginId: string; authUrl: string }> {
     if (this.loginOwner)

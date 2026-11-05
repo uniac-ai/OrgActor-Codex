@@ -1,34 +1,28 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { request as httpRequest } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { startServer } from "../src/server/index.js";
-import { ed25519, type ThisMac } from "../src/setup/access.js";
+import { controlSocket, type ThisMac } from "../src/setup/this-mac.js";
 
-async function guided(t: test.TestContext) {
+async function guided(t: test.TestContext, overrides: Partial<ThisMac> = {}) {
   const dir = mkdtempSync(join(tmpdir(), "orgactor-guide-api-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const home = join(dir, "home");
   mkdirSync(join(home, "bin"), { recursive: true });
-  writeFileSync(join(home, "host.pub"), `${ed25519("host").public} root@mac\n`);
   writeFileSync(join(home, "bin", "codex"), "#!/bin/sh\n", { mode: 0o755 });
+  const starts: string[] = [];
   const mac: ThisMac = {
     platform: "darwin",
     home,
-    user: "person",
-    shell: "/bin/zsh",
-    hostKey: join(home, "host.pub"),
     codex: [join(home, "bin", "codex")],
-    sshPort: 22,
-    desktopState: join(home, ".codex-global-state.json"),
-    // Desktop's `codex --version` answers; `ssh -G` is real, since it only reads the config.
-    ssh: async (args) =>
-      args[0] === "-G"
-        ? { code: 0, stdout: execFileSync("ssh", args, { encoding: "utf8", stdio: "pipe" }) }
-        : { code: 0, stdout: "codex-cli 1.2.3\n" },
+    startDaemon: async (codex) => {
+      starts.push(codex);
+      return controlSocket(home);
+    },
+    ...overrides,
   };
   const server = await startServer({ root: join(dir, "runtime"), port: 0, mac });
   t.after(() => server.close());
@@ -39,54 +33,41 @@ async function guided(t: test.TestContext) {
         ? {}
         : { headers: { "content-type": "application/json" }, body: JSON.stringify(body) }),
     });
-    const text = await response.text();
-    assert.doesNotMatch(text, /PRIVATE KEY/, `${method} ${path} never returns key material`);
-    return { status: response.status, body: JSON.parse(text) };
+    return { status: response.status, body: await response.json() };
   };
-  return { server, home, call };
+  return { server, home, call, starts };
 }
 
-test("the guide's API reviews, writes and removes SSH access, never returning a private key", async (t) => {
-  const { server, home, call } = await guided(t);
+test("the guide's API checks the app server steps and makes Codex on this Mac the backend", async (t) => {
+  const { server, home, call, starts } = await guided(t);
   const guide = await call("GET", "/setup/guide");
   assert.equal(guide.status, 200);
   assert.equal(guide.body.available, true);
   assert.equal(guide.body.inUse, false);
-  assert.equal(guide.body.accessPresent, false);
   assert.deepEqual(
     guide.body.steps.map((s: any) => s.id),
-    ["hub", "login", "access", "desktop", "folder", "actor", "session", "tools"],
+    ["hub", "codex", "account", "folder", "actor", "tools"],
   );
   assert.equal(guide.body.steps[0].code, "HUB_UNCONFIGURED");
   assert.equal((await call("POST", "/setup/guide/check")).status, 200);
 
-  const plan = await call("POST", "/setup/guide/access/plan");
-  assert.equal(plan.status, 200);
-  assert.ok(plan.body.writes.some((w: any) => w.action === "append" && w.lines.length === 4));
-  assert.deepEqual(
-    (await call("PUT", "/setup/guide/access", { planId: "another" })).body.error.code,
-    "PLAN_STALE",
-  );
-  assert.equal(
-    (await call("PUT", "/setup/guide/access", { planId: plan.body.id, extra: 1 })).status,
-    422,
-  );
-  const applied = await call("PUT", "/setup/guide/access", { planId: plan.body.id });
-  assert.equal(applied.status, 200);
-  assert.equal(applied.body.settings.backend.kind, "ssh");
-  assert.equal(applied.body.settings.backend.privateKeyPresent, true);
+  const used = await call("PUT", "/setup/guide/codex");
+  assert.equal(used.status, 200);
+  assert.deepEqual(used.body.settings.backend, {
+    kind: "app-server",
+    endpoint: `unix://${controlSocket(home)}`,
+  });
+  assert.equal(used.body.settings.bridgeUrl, `${server.url}/mcp`);
+  assert.equal(starts.length, 1);
   assert.equal((await call("GET", "/setup/guide")).body.inUse, true);
-  // Present whatever step the guide is on, so it can always be removed.
-  assert.equal((await call("GET", "/setup/guide")).body.accessPresent, true);
-  assert.equal(applied.body.settings.bridgeUrl, `${server.url}/mcp`);
-  assert.ok(existsSync(join(home, ".ssh", "authorized_keys")));
-  assert.equal((await call("POST", "/setup/guide/access/plan")).body.error.code, "ACCESS_PRESENT");
+});
 
-  const removed = await call("DELETE", "/setup/guide/access");
-  assert.equal(removed.status, 200);
-  assert.equal((await call("GET", "/setup/guide")).body.accessPresent, false);
-  assert.equal(removed.body.settings.backend, undefined);
-  assert.equal(existsSync(join(home, ".ssh")), false);
+test("Codex on this Mac isn't made the backend when its app server doesn't start", async (t) => {
+  const { server, call } = await guided(t, { startDaemon: async () => undefined });
+  const refused = await call("PUT", "/setup/guide/codex");
+  assert.equal(refused.status, 503);
+  assert.equal(refused.body.error.code, "CODEX_NOT_STARTED");
+  assert.equal(server.store.data.settings.backend, undefined);
 });
 
 test("the guide's API refuses an adapter-connected folder and creates the chosen one", async (t) => {
@@ -110,10 +91,9 @@ test("the guide's API refuses an adapter-connected folder and creates the chosen
 test("attaching waits for the guide's folder step, and Detach forgets the Actor", async (t) => {
   const { server, call } = await guided(t);
   const attach = { actorId: "act", config: { approvalAuthority: "desktop" } };
-  // Without the guide's access as the backend, attaching keeps its existing checks.
+  // Without Codex on this Mac as the backend, attaching keeps its existing checks.
   assert.equal((await call("POST", "/actors", attach)).body.error.code, "PROVISIONING_FAILED");
-  const plan = await call("POST", "/setup/guide/access/plan");
-  await call("PUT", "/setup/guide/access", { planId: plan.body.id });
+  await call("PUT", "/setup/guide/codex");
   const gated = await call("POST", "/actors", attach);
   assert.equal(gated.status, 409);
   assert.equal(gated.body.error.code, "SETUP_INCOMPLETE");
@@ -130,7 +110,7 @@ test("attaching waits for the guide's folder step, and Detach forgets the Actor"
   };
   server.store.data.journal["http://hub|codex|act"] = { fingerprint: "f", state: "failed" };
   assert.equal(
-    (await call("DELETE", "/setup/guide/access")).body.error.code,
+    (await call("PUT", "/setup/guide/folder", { path: "/elsewhere" })).body.error.code,
     "EXECUTION_CONFIG_BOUND",
   );
   const detached = await call("DELETE", "/actors/act");
@@ -140,35 +120,17 @@ test("attaching waits for the guide's folder step, and Detach forgets the Actor"
     JSON.parse(readFileSync(server.store.file, "utf8")).journal["http://hub|codex|act"],
     undefined,
   );
-  assert.equal((await call("DELETE", "/setup/guide/access")).status, 200);
 });
 
-test("off a Mac the guide reports itself unavailable and writes nothing", async (t) => {
-  const dir = mkdtempSync(join(tmpdir(), "orgactor-guide-linux-"));
-  t.after(() => rmSync(dir, { recursive: true, force: true }));
-  const server = await startServer({
-    root: join(dir, "runtime"),
-    port: 0,
-    mac: {
-      platform: "linux",
-      home: dir,
-      user: "person",
-      shell: "/bin/sh",
-      hostKey: join(dir, "absent"),
-      codex: [],
-      sshPort: 22,
-      desktopState: join(dir, "absent.json"),
-      ssh: async () => ({ code: 255, stdout: "" }),
-    },
-  });
-  t.after(() => server.close());
-  const guide = await (await fetch(`${server.url}/api/setup/guide`)).json();
+test("off a Mac the guide reports itself unavailable and changes nothing", async (t) => {
+  const { server, call } = await guided(t, { platform: "linux" });
+  const guide = await call("GET", "/setup/guide");
   assert.deepEqual(
-    { available: guide.available, steps: guide.steps },
+    { available: guide.body.available, steps: guide.body.steps },
     { available: false, steps: [] },
   );
-  const plan = await fetch(`${server.url}/api/setup/guide/access/plan`, { method: "POST" });
-  assert.equal((await plan.json()).error.code, "THIS_MAC_UNAVAILABLE");
+  assert.equal((await call("PUT", "/setup/guide/codex")).body.error.code, "THIS_MAC_UNAVAILABLE");
+  assert.equal(server.store.data.settings.backend, undefined);
 });
 
 test("the API answers only requests addressed to this machine", async (t) => {

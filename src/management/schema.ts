@@ -5,20 +5,11 @@ export const ExecutionConfig = z.strictObject({
   model: z.string().min(1).optional(),
   approvalAuthority: Authority.default("desktop"),
 });
-export const Backend = z.discriminatedUnion("kind", [
-  z.strictObject({
-    kind: z.literal("ssh"),
-    host: z.string().regex(/^[A-Za-z0-9_.:-]+$/),
-    port: z.number().int().min(1).max(65535).default(22),
-    user: z.string().regex(/^[A-Za-z_][A-Za-z0-9_-]*$/),
-    privateKey: z.string().min(1).optional(),
-    knownHosts: z.string().min(1).optional(),
-  }),
-  z.strictObject({
-    kind: z.literal("app-server"),
-    endpoint: z.string().regex(/^(unix:\/\/\/|wss?:\/\/)/),
-  }),
-]);
+/** The Codex app server: a local socket, or a loopback or TLS WebSocket. */
+export const Backend = z.strictObject({
+  kind: z.literal("app-server"),
+  endpoint: z.string().regex(/^(unix:\/\/\/|wss?:\/\/)/),
+});
 export const ConnectorSettings = z.strictObject({
   backend: Backend.optional(),
   workspaceRoot: z.string().startsWith("/").optional(),
@@ -35,7 +26,7 @@ export type HubConfig = z.infer<typeof HubConfig>;
 export type Settings = z.infer<typeof Settings>;
 export type BackendConfig = z.infer<typeof Backend>;
 export type ExecutionConfig = z.infer<typeof ExecutionConfig>;
-export const ProbeStage = z.enum(["backend", "account", "desktop", "bridge", "hub"]);
+export const ProbeStage = z.enum(["backend", "account", "bridge", "hub"]);
 export type ProbeStage = z.infer<typeof ProbeStage>;
 export const Probe = z.object({
   state: z.enum(["unconfigured", "unreachable", "rejected", "ready"]),
@@ -70,7 +61,7 @@ export interface ActorSnapshot {
   actorId: string;
   enabled: boolean;
   connected: boolean;
-  connectionState: "connected" | "connecting" | "paused" | "suspended" | "awaiting-desktop";
+  connectionState: "connected" | "connecting" | "paused" | "suspended";
   observation: "available" | "unavailable";
   observedAt: string | null;
   threadId: string;
@@ -84,11 +75,7 @@ export interface ActorSnapshot {
 export interface PublicState {
   revision: number;
   settings: Omit<Settings, "backend" | "hub"> & {
-    backend?: Omit<BackendConfig, "privateKey" | "knownHosts"> & {
-      privateKeyPresent?: boolean;
-      knownHostsPresent?: boolean;
-      keyFingerprint?: string;
-    };
+    backend?: BackendConfig;
     hub?: { url: string; providerId: string; credentialPresent: boolean };
   };
   probes: Partial<Record<ProbeStage, Probe>>;
@@ -108,16 +95,7 @@ export interface PublicState {
   actors: ActorSnapshot[];
 }
 /** The guided setup on this Mac, in order. */
-export const STEPS = [
-  "hub",
-  "login",
-  "access",
-  "desktop",
-  "folder",
-  "actor",
-  "session",
-  "tools",
-] as const;
+export const STEPS = ["hub", "codex", "account", "folder", "actor", "tools"] as const;
 export type StepId = (typeof STEPS)[number];
 export interface GuideStep {
   id: StepId;
@@ -129,30 +107,12 @@ export interface GuideStep {
 export interface Guide {
   /** Whether this Provider runs on a Mac the guide can set up; otherwise only other setups apply. */
   available: boolean;
-  /** Whether the Provider's backend is the guide's SSH access, so its order governs attaching. */
+  /** Whether the Provider's backend is Codex on this Mac, so the guide's order governs attaching. */
   inUse: boolean;
-  /** Whether any of the guide's SSH access is in place, whatever step the guide is on. */
-  accessPresent: boolean;
   checkedAt: string;
   folder: { path?: string; suggested: string };
   steps: GuideStep[];
 }
-/** One item of the review shown before anything is written. */
-export type AccessWrite =
-  | { action: "directory"; path: string; mode: "0700" }
-  | { action: "key"; path: string; mode: "0600"; fingerprint: string }
-  | { action: "file"; path: string; mode: "0600" | "0700"; lines: string[] }
-  | { action: "backup"; path: string; from: string }
-  /** Added at the end, or before the line `before` names (the file's first Host or Match). */
-  | { action: "append"; path: string; lines: string[]; creates: boolean; before?: string }
-  | { action: "backend"; host: string; port: number; user: string; fingerprint: string };
-
-export interface AccessPlan {
-  id: string;
-  writes: AccessWrite[];
-}
-
-export const AccessApply = z.strictObject({ planId: z.string().min(1).max(128) });
 export const FolderChoice = z.strictObject({ path: z.string().startsWith("/").max(1024) });
 export class Fault extends Error {
   native?: { method: string; code: number; reason?: "missing-rollout" };

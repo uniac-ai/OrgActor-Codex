@@ -1,19 +1,7 @@
 import type { CodexAdapter } from "../codex/index.js";
 import { Fault } from "../management/schema.js";
-import type { Bootstrap, RuntimeStore } from "../runtime/index.js";
+import type { RuntimeStore } from "../runtime/index.js";
 import { ActorController } from "./controller.js";
-
-/**
- * An Actor whose native requests Codex Desktop answers waits, not admitted to the Hub, until the
- * operator confirms Desktop for the current setup revision.
- */
-export function waitsForDesktop(bootstrap: Bootstrap, data: RuntimeStore["data"]): boolean {
-  const desktop = data.probes.desktop;
-  return (
-    bootstrap.config.approvalAuthority === "desktop" &&
-    !(desktop?.state === "ready" && desktop.revision === data.revision)
-  );
-}
 
 export class ActorSupervisor {
   readonly actors = new Map<string, ActorController>();
@@ -32,13 +20,6 @@ export class ActorSupervisor {
     if (this.closed) return;
     const bootstrap = this.store.data.actors[id];
     if (!bootstrap?.enabled || bootstrap.suspended) return;
-    // Admitted only to create its native session, it leaves the Hub until Desktop is confirmed.
-    if (bootstrap.threadId && waitsForDesktop(bootstrap, this.store.data)) {
-      const running = this.actors.get(id);
-      this.actors.delete(id);
-      void running?.close();
-      return;
-    }
     let actor = this.actors.get(id);
     if (!actor) {
       actor = new ActorController(bootstrap, this.store, this.adapter);

@@ -12,16 +12,7 @@ test.beforeEach(async ({ page }) => {
   module = await startServer({
     root: dir,
     port: 0,
-    mac: {
-      platform: "linux",
-      home: dir,
-      user: "person",
-      shell: "/bin/sh",
-      hostKey: join(dir, "absent"),
-      codex: [],
-      sshPort: 22,
-      ssh: async () => ({ code: 255, stdout: "" }),
-    },
+    mac: { platform: "linux", home: dir, codex: [], startDaemon: async () => undefined },
   });
   await page.goto(module.url);
   await expect(page.getByRole("heading", { name: "Setup", exact: true })).toBeVisible();
@@ -79,8 +70,6 @@ test("setup saves real ManagementApi configuration and probes factual missing pr
 }) => {
   await page.getByRole("button", { name: "Check Codex connection" }).click();
   await expect(page.getByText("backend unconfigured", { exact: true })).toBeVisible();
-  await page.getByLabel("Connection", { exact: true }).click();
-  await page.getByRole("option", { name: "Co-located app server" }).click();
   await page.getByLabel("App server endpoint").fill("unix:///owned/codex.sock");
   await page.getByLabel("Workspace root").fill("/owned/workspace");
   await page.getByRole("button", { name: "Save connections" }).click();
@@ -88,18 +77,6 @@ test("setup saves real ManagementApi configuration and probes factual missing pr
   expect(module.store.data.settings.backend?.kind).toBe("app-server");
   expect(module.store.data.probes).toEqual({});
   await screenshot(page, "setup");
-});
-test("SSH credentials are write-only and never rehydrate into forms", async ({ page }) => {
-  await page.getByLabel("Host", { exact: true }).fill("127.0.0.1");
-  await page.getByLabel("SSH user").fill("operator");
-  await page.getByLabel("SSH private key").fill("PRIVATE_KEY_SENTINEL");
-  await page.getByLabel("Verified known-host entry").fill("HOST_SENTINEL");
-  await page.getByRole("button", { name: "Save connections" }).click();
-  await expect(page.getByLabel("SSH private key")).toHaveValue("");
-  await expect(page.getByText("A key is stored. Leave blank to keep it.")).toBeVisible();
-  await page.reload();
-  await expect(page.getByLabel("SSH private key")).toHaveValue("");
-  expect(await page.content()).not.toContain("PRIVATE_KEY_SENTINEL");
 });
 test("Provider and backend surfaces render their real unconfigured states", async ({ page }) => {
   await page.getByRole("button", { name: "Provider", exact: true }).click();

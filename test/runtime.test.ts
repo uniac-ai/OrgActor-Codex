@@ -112,16 +112,7 @@ test("ManagementApi opens directly, validates mutations and keeps private materi
   assert.equal(initial.headers.get("set-cookie"), null);
   assert.equal(initial.headers.get("cache-control"), "no-store");
   const headers = { "Content-Type": "application/json" };
-  const settings = {
-    backend: {
-      kind: "ssh",
-      host: "localhost",
-      port: 22,
-      user: "test",
-      privateKey: "KEY_SENTINEL",
-      knownHosts: "HOST_SENTINEL",
-    },
-  };
+  const settings = { backend: { kind: "app-server", endpoint: "unix:///owned/codex.sock" } };
   const save = await fetch(`${server.url}/api/setup`, {
     method: "PUT",
     headers,
@@ -135,8 +126,7 @@ test("ManagementApi opens directly, validates mutations and keeps private materi
   });
   assert.equal(overwrite.status, 422);
   const state = await (await fetch(`${server.url}/api/state`)).text();
-  for (const secret of ["KEY_SENTINEL", "HOST_SENTINEL", "PROVIDER_SENTINEL"])
-    assert.ok(!state.includes(secret));
+  for (const secret of ["PROVIDER_SENTINEL"]) assert.ok(!state.includes(secret));
   assert.match(state, /credentialPresent/);
   assert.equal(server.store.data.settings.hub?.providerId, "provider");
   assert.match(readFileSync(store.file, "utf8"), /PROVIDER_SENTINEL/);

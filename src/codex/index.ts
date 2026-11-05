@@ -1,8 +1,7 @@
-import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { realpathSync } from "node:fs";
 import { connect } from "node:net";
-import { Duplex } from "node:stream";
+import { basename } from "node:path";
 import WebSocket from "ws";
 import { type BackendConfig, Fault } from "../management/schema.js";
 import type { RuntimeStore } from "../runtime/index.js";
@@ -21,6 +20,8 @@ export interface CodexAdapter {
     model?: string;
     bridgeUrl: string;
     bridgeToken: string;
+    /** The session's title in Codex Desktop. */
+    name?: string;
   }): Promise<string>;
   resume(
     threadId: string,
@@ -53,10 +54,7 @@ export class NativeProtocol extends EventEmitter {
     }
   >();
   connected = false;
-  constructor(
-    readonly ws: WebSocket,
-    readonly process?: ChildProcessWithoutNullStreams,
-  ) {
+  constructor(readonly ws: WebSocket) {
     super();
     ws.on("message", (raw) => {
       let frame: Frame;
@@ -199,7 +197,6 @@ export class NativeProtocol extends EventEmitter {
   }
   close(): void {
     this.ws.close();
-    this.process?.kill("SIGTERM");
   }
 }
 
@@ -244,15 +241,60 @@ export class AppServerAdapter implements CodexAdapter {
     model?: string;
     bridgeUrl: string;
     bridgeToken: string;
+    name?: string;
   }): Promise<string> {
     const result = await this.protocol.request("thread/start", sessionStart(input, false));
     if (typeof result.thread?.id !== "string")
       throw new Fault("NATIVE_UNKNOWN", "Codex did not return a session identity.");
-    this.created.set(result.thread.id, {
+    const threadId: string = result.thread.id;
+    this.created.set(threadId, {
       bridgeUrl: input.bridgeUrl,
       bridgeToken: input.bridgeToken,
     });
-    return result.thread.id;
+    await this.place(threadId, input.cwd, input.name);
+    return threadId;
+  }
+  /**
+   * Save a new session and file it under the project holding its folder. Codex saves a session at
+   * its first message; naming it saves it at once, so it can be opened and assigned. Neither is
+   * needed for the session to work, so a refusal leaves it as it is.
+   */
+  async place(threadId: string, cwd: string, name?: string): Promise<void> {
+    if (name)
+      await this.protocol.request("thread/name/set", { threadId, name }).catch(() => undefined);
+    const project = await this.fileProject(cwd).catch(() => undefined);
+    if (project)
+      await this.protocol
+        .request("thread/metadata/update", { threadId, projectId: project.id })
+        .catch(() => undefined);
+  }
+  /** The folder's project, created when it has none, so the sessions there are listed under it. */
+  async fileProject(cwd: string): Promise<{ id: string; name: string }> {
+    const found = await this.projectOf(cwd);
+    if (found) return found;
+    const { project } = await this.protocol.request("project/create", {
+      idempotencyKey: `agentorg:${cwd}`,
+      name: basename(cwd),
+      roots: [{ path: cwd }],
+    });
+    return { id: project.id, name: project.name };
+  }
+  /** The project whose roots include the folder: the Desktop project it is open in. */
+  async projectOf(cwd: string): Promise<{ id: string; name: string } | undefined> {
+    let cursor: string | undefined;
+    for (let page = 0; page < 10; page++) {
+      const projects = await this.protocol.request("project/list", {
+        limit: 100,
+        ...(cursor ? { cursor } : {}),
+      });
+      const found = projects.data?.find((p: any) =>
+        p.roots?.some((r: any) => (typeof r === "string" ? r : r.path) === cwd),
+      );
+      if (found) return { id: found.id, name: found.name };
+      cursor = projects.nextCursor ?? undefined;
+      if (!cursor) return undefined;
+    }
+    return undefined;
   }
   /** Start and drop an ephemeral session with an Actor's settings: whether Codex accepts them. */
   async preflight(input: { cwd: string; bridgeUrl: string; bridgeToken: string }): Promise<void> {
@@ -391,14 +433,14 @@ export class AppServerAdapter implements CodexAdapter {
     return this.protocol.watch(listener);
   }
 }
-export class SshAdapter extends AppServerAdapter {}
-
 /** A shared configured connection; SetupService owns configuration and explicit authentication. */
 export class CodexBackend {
   private current?: AppServerAdapter;
   private opening?: Promise<AppServerAdapter>;
   private pending?: NativeProtocol;
-  constructor(private store: RuntimeStore) {}
+  /** Runs before each connect, as starting the app server it connects to. */
+  prepare?: () => Promise<void>;
+  constructor(private store: Pick<RuntimeStore, "data">) {}
   async get(): Promise<AppServerAdapter> {
     if (this.current?.protocol.connected) return this.current;
     if (this.opening) return this.opening;
@@ -411,8 +453,8 @@ export class CodexBackend {
   private async open(): Promise<AppServerAdapter> {
     const config = this.store.data.settings.backend;
     if (!config) throw new Fault("BACKEND_UNCONFIGURED", "Configure a Codex backend first.", 422);
-    const { ws, process: child } = this.transport(config);
-    const protocol = new NativeProtocol(ws, child);
+    await this.prepare?.();
+    const protocol = new NativeProtocol(this.transport(config));
     this.pending = protocol;
     try {
       await protocol.initialize();
@@ -422,8 +464,7 @@ export class CodexBackend {
           "The backend configuration changed while connecting.",
           503,
         );
-      this.current =
-        config.kind === "ssh" ? new SshAdapter(protocol) : new AppServerAdapter(protocol);
+      this.current = new AppServerAdapter(protocol);
       return this.current;
     } catch (error) {
       if (this.pending === protocol) protocol.close();
@@ -432,58 +473,13 @@ export class CodexBackend {
       if (this.pending === protocol) this.pending = undefined;
     }
   }
-  private transport(config: BackendConfig): {
-    ws: WebSocket;
-    process?: ChildProcessWithoutNullStreams;
-  } {
-    if (config.kind === "ssh") {
-      if (!config.privateKey || !config.knownHosts)
-        throw new Fault(
-          "SSH_UNCONFIGURED",
-          "Add an SSH private key and verified known-host entry.",
-          422,
-        );
-      const key = this.store.privateFile("ssh-key", config.privateKey);
-      const hosts = this.store.privateFile("known-hosts", config.knownHosts);
-      const child = spawn(
-        "ssh",
-        [
-          "-T",
-          "-F",
-          "/dev/null",
-          "-oBatchMode=yes",
-          "-oStrictHostKeyChecking=yes",
-          "-oIdentitiesOnly=yes",
-          "-oConnectTimeout=10",
-          `-oUserKnownHostsFile=${hosts}`,
-          "-i",
-          key,
-          "-p",
-          String(config.port),
-          `${config.user}@${config.host}`,
-          "exec codex app-server proxy",
-        ],
-        { stdio: ["pipe", "pipe", "pipe"], env: cleanEnvironment() },
-      );
-      child.stderr.on("data", () => {});
-      child.on("error", () => {});
-      const stream = Duplex.from({ readable: child.stdout, writable: child.stdin });
-      return {
-        ws: new WebSocket("ws://codex-app-server/rpc", {
-          createConnection: () => stream,
-          perMessageDeflate: false,
-        }),
-        process: child,
-      };
-    }
+  /** A local socket, resolved on each connect so a restarted app server's new path is used. */
+  private transport(config: BackendConfig): WebSocket {
     if (config.endpoint.startsWith("unix://"))
-      return {
-        ws: new WebSocket("ws://codex-app-server/rpc", {
-          createConnection: () =>
-            connect(realpathSync(decodeURIComponent(config.endpoint.slice(7)))),
-          perMessageDeflate: false,
-        }),
-      };
+      return new WebSocket("ws://codex-app-server/rpc", {
+        createConnection: () => connect(realpathSync(decodeURIComponent(config.endpoint.slice(7)))),
+        perMessageDeflate: false,
+      });
     const url = new URL(config.endpoint);
     if (
       url.username ||
@@ -495,7 +491,7 @@ export class CodexBackend {
         "Use a local socket, loopback WebSocket, or TLS endpoint.",
         422,
       );
-    return { ws: new WebSocket(config.endpoint, { perMessageDeflate: false }) };
+    return new WebSocket(config.endpoint, { perMessageDeflate: false });
   }
   close(): void {
     const pending = this.pending;

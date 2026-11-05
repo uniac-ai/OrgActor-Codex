@@ -6,12 +6,6 @@ import { views } from "../views";
 
 const client = new ManagementClient();
 const empty: SetupForm = {
-  kind: "ssh",
-  host: "",
-  port: "22",
-  user: "",
-  privateKey: "",
-  knownHosts: "",
   endpoint: "",
   workspaceRoot: "",
   bridgeUrl: "",
@@ -22,7 +16,6 @@ export function ConsoleControl() {
   const [state, setState] = useState<PublicState | null>(null);
   const [busy, setBusy] = useState(false);
   const [form, setForm] = useState(empty);
-  const [desktopThread, setDesktopThread] = useState("");
   const [attach, setAttach] = useState({ actorId: "", credential: "", model: "" });
   const [selected, setSelected] = useState<string | null>(null);
   const [text, setText] = useState("");
@@ -67,14 +60,9 @@ export function ConsoleControl() {
     if (!state || formRevision.current === state.revision) return;
     formRevision.current = state.revision;
     const s = state.settings;
-    const b = s.backend as any;
     setForm({
       ...empty,
-      kind: b?.kind ?? "ssh",
-      host: b?.host ?? "",
-      port: String(b?.port ?? 22),
-      user: b?.user ?? "",
-      endpoint: b?.endpoint ?? "",
+      endpoint: s.backend?.endpoint ?? "",
       workspaceRoot: s.workspaceRoot ?? "",
       bridgeUrl: s.bridgeUrl ?? `${location.origin}/mcp`,
     });
@@ -122,8 +110,7 @@ export function ConsoleControl() {
   const confirm = (c: Consent) =>
     void perform(async () => {
       try {
-        if (c.kind === "access") await client.applyAccess(c.planId);
-        else if (c.kind === "remove-access") await client.removeAccess();
+        if (c.kind === "use-codex") await client.codexOnThisMac();
         else if (c.kind === "create-folder") await client.createFolder();
         else await client.detach(c.actorId);
       } finally {
@@ -157,14 +144,7 @@ export function ConsoleControl() {
                 }
               }),
             onRecheck: () => void recheck(),
-            onSetUpAccess: () =>
-              void perform(async () => {
-                const plan = await client.planAccess();
-                setConsent({ kind: "access", planId: plan.id, writes: plan.writes });
-              }),
             onAsk: setConsent,
-            onConfirmSession: (threadId) =>
-              void perform(() => client.desktop(threadId, state.settings.workspaceRoot ?? "")),
             attach,
             onAttachField: (name, value) => setAttach((old) => ({ ...old, [name]: value })),
             onAttach: attachActor,
@@ -174,30 +154,16 @@ export function ConsoleControl() {
         state={state}
         form={form}
         busy={busy}
-        desktopThread={desktopThread}
-        onDesktopThread={setDesktopThread}
-        onConfirmDesktop={() =>
-          void perform(() => client.desktop(desktopThread, state.settings.workspaceRoot ?? ""))
-        }
         onField={(name, value) => setForm((old) => ({ ...old, [name]: value }))}
         onSave={() =>
           void perform(async () => {
             await client.setup({
-              backend:
-                form.kind === "ssh"
-                  ? {
-                      kind: "ssh",
-                      host: form.host,
-                      port: Number(form.port),
-                      user: form.user,
-                      ...(form.privateKey ? { privateKey: form.privateKey } : {}),
-                      ...(form.knownHosts ? { knownHosts: form.knownHosts } : {}),
-                    }
-                  : { kind: "app-server", endpoint: form.endpoint },
+              ...(form.endpoint
+                ? { backend: { kind: "app-server", endpoint: form.endpoint } }
+                : {}),
               workspaceRoot: form.workspaceRoot || undefined,
               bridgeUrl: form.bridgeUrl || undefined,
             });
-            setForm((s) => ({ ...s, privateKey: "", knownHosts: "" }));
           })
         }
         onProbe={(stage) => void perform(() => client.probe(stage))}

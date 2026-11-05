@@ -1,6 +1,5 @@
 import type { ReactNode } from "react";
 import type {
-  AccessWrite,
   ActorSnapshot,
   Guide,
   ProbeStage,
@@ -9,12 +8,6 @@ import type {
 } from "../../../src/management/schema";
 export type Page = "setup" | "provider" | "actors" | "backend";
 export interface SetupForm {
-  kind: "ssh" | "app-server";
-  host: string;
-  port: string;
-  user: string;
-  privateKey: string;
-  knownHosts: string;
   endpoint: string;
   workspaceRoot: string;
   bridgeUrl: string;
@@ -32,8 +25,7 @@ export interface AttachForm {
 }
 /** A write the person reviews before the console makes it. */
 export type Consent =
-  | { kind: "access"; planId: string; writes: AccessWrite[] }
-  | { kind: "remove-access" }
+  | { kind: "use-codex"; socket: string }
   | { kind: "create-folder"; path: string }
   | { kind: "detach"; actorId: string };
 export interface ConsentFeature {
@@ -42,7 +34,7 @@ export interface ConsentFeature {
   onCancel(): void;
   onConfirm(): void;
 }
-/** The guided steps for Codex Desktop over SSH to this Mac. */
+/** The guided steps for an Actor worked by Codex on this Mac. */
 export interface GuideFeature {
   guide: Guide;
   busy: boolean;
@@ -54,9 +46,7 @@ export interface GuideFeature {
   onFolder(value: string): void;
   onChooseFolder(path: string): void;
   onRecheck(): void;
-  onSetUpAccess(): void;
   onAsk(consent: Consent): void;
-  onConfirmSession(threadId: string): void;
   attach: AttachForm;
   onAttachField(name: keyof AttachForm, value: string): void;
   onAttach(): void;
@@ -71,9 +61,6 @@ export interface SetupFeature {
   onField<K extends keyof SetupForm>(name: K, value: SetupForm[K]): void;
   onSave(): void;
   onProbe(stage: ProbeStage): void;
-  desktopThread: string;
-  onDesktopThread(value: string): void;
-  onConfirmDesktop(): void;
 }
 export interface ProviderFeature {
   state: PublicState;
