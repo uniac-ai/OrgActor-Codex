@@ -13,7 +13,6 @@ class HeldPeer extends EventEmitter {
   readyState: number = WebSocket.OPEN;
   initializeId?: number;
   closes = 0;
-  kills = 0;
   constructor(readonly endpoint: string) {
     super();
   }
@@ -49,7 +48,7 @@ for (const order of ["old-first", "new-first"])
     (backend as any).transport = (config: { endpoint: string }) => {
       const peer = new HeldPeer(config.endpoint);
       peers.push(peer);
-      return { ws: peer, process: { kill: () => peer.kills++ } };
+      return peer;
     };
     t.after(() => {
       backend.close();
@@ -73,7 +72,6 @@ for (const order of ["old-first", "new-first"])
     const oldRevision = store.data.revision;
     setup.configure({ backend: { kind: "app-server", endpoint: b } });
     assert.equal(peers[0].closes, 1);
-    assert.equal(peers[0].kills, 1);
     const currentProbe = setup.probe("backend");
     const current = backend.get();
     await new Promise(setImmediate);
@@ -100,7 +98,6 @@ for (const order of ["old-first", "new-first"])
       await settleOld();
     }
     assert.equal(peers[1].closes, 0);
-    assert.equal(peers[1].kills, 0);
     assert.equal(await backend.get(), await current);
     assert.equal(peers.length, 2);
     const execution = await setup.executionAdapter();
@@ -110,5 +107,4 @@ for (const order of ["old-first", "new-first"])
     assert.equal(peers[0].closes, 1);
     backend.close();
     assert.equal(peers[1].closes, 1);
-    assert.equal(peers[1].kills, 1);
   });

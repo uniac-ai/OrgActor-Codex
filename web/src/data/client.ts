@@ -1,5 +1,4 @@
 import type {
-  AccessPlan,
   ConnectorSettings,
   Guide,
   Probe,
@@ -28,14 +27,8 @@ export class ManagementClient {
       ? this.request<Guide>("/setup/guide/check", "POST")
       : this.request<Guide>("/setup/guide");
   }
-  planAccess() {
-    return this.request<AccessPlan>("/setup/guide/access/plan", "POST");
-  }
-  applyAccess(planId: string) {
-    return this.request("/setup/guide/access", "PUT", { planId });
-  }
-  removeAccess() {
-    return this.request("/setup/guide/access", "DELETE");
+  codexOnThisMac() {
+    return this.request("/setup/guide/codex", "PUT");
   }
   chooseFolder(path: string) {
     return this.request("/setup/guide/folder", "PUT", { path });
@@ -54,13 +47,6 @@ export class ManagementClient {
   }
   probe(stage: ProbeStage) {
     return this.request<Probe>(`/setup/probes/${stage}`, "POST");
-  }
-  desktop(threadId: string, workspaceRoot: string) {
-    return this.request("/setup/desktop-confirmation", "POST", {
-      threadId,
-      workspaceRoot,
-      observation: "rendered",
-    });
   }
   provider(enabled: boolean) {
     return this.request("/provider", "PUT", { enabled });

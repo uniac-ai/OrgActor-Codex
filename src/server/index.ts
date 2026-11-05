@@ -10,9 +10,9 @@ import { management } from "../management/index.js";
 import { Fault, HubConfig } from "../management/schema.js";
 import { CodexProvider } from "../provider/index.js";
 import { RuntimeStore } from "../runtime/index.js";
-import type { ThisMac } from "../setup/access.js";
 import { GuideService } from "../setup/guide.js";
 import { SetupService } from "../setup/index.js";
+import type { ThisMac } from "../setup/this-mac.js";
 
 export async function startServer(options: {
   root: string;
@@ -49,6 +49,7 @@ export async function startServer(options: {
   );
   const setup: SetupService = new SetupService(store, backend, provider);
   const guide = new GuideService(store, setup, backend, provider, options.mac);
+  backend.prepare = () => guide.prepare();
   const bridge = new SessionMcpBridge(store, actors);
   const app = management(store, setup, provider, actors, guide);
   const webRoot = resolve(options.webRoot ?? "dist/web");
@@ -97,6 +98,7 @@ export async function startServer(options: {
     void listener(req, res);
   });
   const close = async () => {
+    guide.stop();
     provider.close();
     await actors.close();
     await bridge.close();
@@ -115,6 +117,7 @@ export async function startServer(options: {
     url = `http://${options.hostname ?? "127.0.0.1"}:${address.port}`;
     guide.bridgeUrl = `http://127.0.0.1:${address.port}/mcp`;
     actors.recover();
+    if (guide.available) guide.start();
   } catch (error) {
     await close();
     throw error;

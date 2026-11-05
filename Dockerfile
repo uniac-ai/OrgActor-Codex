@@ -15,7 +15,7 @@ COPY test/fixtures/agentorg-cli-0.0.2.tgz ./test/fixtures/agentorg-cli-0.0.2.tgz
 RUN npm ci --omit=dev --ignore-scripts
 
 FROM node:24.22.1-bookworm-slim
-RUN apt-get update && apt-get install -y --no-install-recommends openssh-client ca-certificates tini && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates tini && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY --from=dependencies /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist

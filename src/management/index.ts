@@ -1,12 +1,11 @@
 import { Hono } from "hono";
 import { z } from "zod";
-import { type ActorSupervisor, waitsForDesktop } from "../actors/supervisor.js";
+import type { ActorSupervisor } from "../actors/supervisor.js";
 import type { CodexProvider } from "../provider/index.js";
 import type { RuntimeStore } from "../runtime/index.js";
 import type { GuideService } from "../setup/guide.js";
 import type { SetupService } from "../setup/index.js";
 import {
-  AccessApply,
   Attach,
   Authority,
   Fault,
@@ -27,7 +26,7 @@ export function management(
 ) {
   const app = new Hono();
   // Only requests addressed to this machine reach the API, so a page whose name was rebound to
-  // 127.0.0.1 can't drive it, nor the guide's writes to ~/.ssh.
+  // 127.0.0.1 can't drive it.
   app.use("/api/*", async (c, next) => {
     const host = c.req.header("host") ?? "";
     const name = host.startsWith("[") ? host.slice(0, host.indexOf("]") + 1) : host.split(":")[0];
@@ -70,13 +69,7 @@ export function management(
             actorId: b.actorId,
             enabled: b.enabled,
             connected: false,
-            connectionState: b.suspended
-              ? "suspended"
-              : !b.enabled
-                ? "paused"
-                : b.threadId && waitsForDesktop(b, store.data)
-                  ? "awaiting-desktop"
-                  : "connecting",
+            connectionState: b.suspended ? "suspended" : !b.enabled ? "paused" : "connecting",
             observation: "unavailable",
             observedAt: null,
             threadId: b.threadId,
@@ -98,24 +91,14 @@ export function management(
     c.json(await setup.probe(ProbeStage.parse(c.req.param("stage")))),
   );
   app.post("/api/setup/login", async (c) => c.json(await setup.login()));
-  app.post("/api/setup/desktop-confirmation", async (c) => {
-    const report = await setup.confirmDesktop(await c.req.json());
-    actors.recover();
-    return c.json(report);
-  });
   app.delete("/api/setup/login/:id", async (c) => {
     await setup.cancelLogin(c.req.param("id"));
     return c.json({ cancelled: true });
   });
   app.get("/api/setup/guide", async (c) => c.json(await guide.check()));
   app.post("/api/setup/guide/check", async (c) => c.json(await guide.check(true)));
-  app.post("/api/setup/guide/access/plan", (c) => c.json(guide.planAccess()));
-  app.put("/api/setup/guide/access", async (c) => {
-    await guide.applyAccess(AccessApply.parse(await c.req.json()).planId);
-    return c.json({ revision: store.data.revision, settings: setup.publicSettings() });
-  });
-  app.delete("/api/setup/guide/access", async (c) => {
-    await guide.removeAccess();
+  app.put("/api/setup/guide/codex", async (c) => {
+    await guide.useThisMac();
     return c.json({ revision: store.data.revision, settings: setup.publicSettings() });
   });
   app.put("/api/setup/guide/folder", async (c) => {

@@ -4,7 +4,6 @@ import {
   ChevronRight,
   CircleHelp,
   KeyRound,
-  Monitor,
   Pause,
   Play,
   Plus,
@@ -70,27 +69,20 @@ function Field({ label, children, help }: { label: string; children: ReactNode; 
     </div>
   );
 }
-/** A check's state; `missing` says what to do while it isn't ready. */
-function Status({ probe, missing }: { probe?: Probe; missing?: string }) {
+function Status({ probe }: { probe?: Probe }) {
   return (
     <Badge
       variant={probe?.state === "ready" ? "secondary" : "outline"}
       className={probe?.state === "ready" ? "status-ready" : ""}
     >
       {probe?.state === "ready" ? <CheckCircle2 /> : <CircleHelp />}
-      {probe?.state === "ready" ? probe.state : (missing ?? (probe ? probe.state : "Not checked"))}
+      {probe ? probe.state : "Not checked"}
     </Badge>
   );
 }
-const confirmInDesktop = "Confirm the session in Codex Desktop";
 const stages: { id: ProbeStage; title: string; description: string }[] = [
   { id: "backend", title: "Codex connection", description: "Reach the shared app server." },
   { id: "account", title: "ChatGPT plan", description: "Verify sign-in and included usage." },
-  {
-    id: "desktop",
-    title: "Desktop workspace",
-    description: "Open the exact saved workspace root in Codex Desktop.",
-  },
   {
     id: "bridge",
     title: "Container connection",
@@ -135,65 +127,20 @@ function ManualSetup(p: SetupFeature) {
         <Card>
           <CardHeader>
             <CardTitle>Codex backend</CardTitle>
-            <CardDescription>
-              Use the backend shared with your Codex Desktop connection.
-            </CardDescription>
+            <CardDescription>Codex's app server, where the Actors' sessions run.</CardDescription>
           </CardHeader>
           <CardContent className="stack">
-            <Field label="Connection">
-              <Select
-                value={p.form.kind}
-                onValueChange={(value) => p.onField("kind", value as "ssh" | "app-server")}
-              >
-                <SelectTrigger aria-label="Connection">
-                  <SelectValue>
-                    {p.form.kind === "ssh" ? "SSH host" : "Co-located app server"}
-                  </SelectValue>
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="ssh">SSH host</SelectItem>
-                  <SelectItem value="app-server">Co-located app server</SelectItem>
-                </SelectContent>
-              </Select>
-            </Field>
-            {p.form.kind === "ssh" ? (
-              <>
-                <div className="grid-two">
-                  {field("host", "Host")}
-                  {field("port", "SSH port")}
-                </div>
-                {field("user", "SSH user")}
-                {field(
-                  "privateKey",
-                  "SSH private key",
-                  true,
-                  p.state.settings.backend?.privateKeyPresent
-                    ? "A key is stored. Leave blank to keep it."
-                    : "Stored privately on the container.",
-                )}
-                <Field label="Verified known-host entry">
-                  <Textarea
-                    aria-label="Verified known-host entry"
-                    rows={3}
-                    value={p.form.knownHosts}
-                    onChange={(e) => p.onField("knownHosts", e.target.value)}
-                    placeholder="[host]:port ssh-ed25519 …"
-                  />
-                </Field>
-              </>
-            ) : (
-              field(
-                "endpoint",
-                "App server endpoint",
-                false,
-                "Use an existing unix:///path/to/socket or protected WebSocket listener.",
-              )
+            {field(
+              "endpoint",
+              "App server endpoint",
+              false,
+              "Codex's app server: a unix:///path/to/socket, or a protected WebSocket listener.",
             )}
             {field(
               "workspaceRoot",
               "Workspace root",
               false,
-              "Use the exact root saved in Codex Desktop's SSH connection or local project.",
+              "The folder the Actor works in. Its sessions are filed under its Codex project.",
             )}
             {field(
               "bridgeUrl",
@@ -222,10 +169,7 @@ function ManualSetup(p: SetupFeature) {
                 <div className="min-w-0 flex-1">
                   <h3>{s.title}</h3>
                   <p>{s.description}</p>
-                  <Status
-                    probe={p.state.probes[s.id]}
-                    missing={s.id === "desktop" ? confirmInDesktop : undefined}
-                  />
+                  <Status probe={p.state.probes[s.id]} />
                   {p.state.probes[s.id] ? (
                     <p className="probe-code">
                       {p.state.probes[s.id]?.code.replaceAll("_", " ").toLowerCase()}
@@ -245,26 +189,6 @@ function ManualSetup(p: SetupFeature) {
             ))}
           </CardContent>
         </Card>
-        <p className="muted text-sm">
-          In Codex Desktop, open Settings → Connections → SSH and use the exact workspace root saved
-          above. Open an attached Actor's session to confirm it appears. Actors that Codex Desktop
-          answers for stay offline in the Hub until you confirm.
-        </p>
-        <Field label="Session visible in Desktop">
-          <Input
-            aria-label="Session visible in Desktop"
-            placeholder="Attached Actor's session ID"
-            value={p.desktopThread}
-            onChange={(e) => p.onDesktopThread(e.target.value)}
-          />
-        </Field>
-        <Button
-          variant="outline"
-          disabled={p.busy || !p.desktopThread}
-          onClick={p.onConfirmDesktop}
-        >
-          Confirm I see this session
-        </Button>
       </aside>
     </div>
   );
@@ -406,12 +330,7 @@ function ActorsView(p: ActorsFeature) {
             <CardContent className="stack">
               {status && !status.ready ? (
                 <div role="status" className="notice actor-reason">
-                  <span>
-                    {status.text}
-                    {actor.connectionState === "awaiting-desktop"
-                      ? `. Until then ${actor.actorId} stays offline in the Hub, and messages to it wait there.`
-                      : null}
-                  </span>
+                  <span>{status.text}</span>
                   {status.step ? (
                     <Button variant="link" onClick={() => p.onSetupStep(status.step as never)}>
                       Open in Setup
@@ -694,13 +613,9 @@ export const views = {
           </CardHeader>
           <CardContent className="stack">
             <dl className="facts">
-              <dt>Transport</dt>
-              <dd>
-                {p.state.settings.backend?.kind === "ssh"
-                  ? "SSH"
-                  : p.state.settings.backend
-                    ? "Co-located app server"
-                    : "Not configured"}
+              <dt>App server</dt>
+              <dd className="break-all">
+                {p.state.settings.backend?.endpoint ?? "Not configured"}
               </dd>
               <dt>Workspace</dt>
               <dd className="break-all">{p.state.settings.workspaceRoot ?? "Not configured"}</dd>
@@ -708,24 +623,12 @@ export const views = {
               <dd>
                 <Status probe={p.state.probes.backend} />
               </dd>
-              <dt>Desktop mapping</dt>
-              <dd>
-                <Status probe={p.state.probes.desktop} missing={confirmInDesktop} />
-              </dd>
             </dl>
             <div className="actions">
               <Button variant="outline" disabled={p.busy} onClick={() => p.onProbe("backend")}>
                 Check connection
               </Button>
-              <Button variant="outline" disabled={p.busy} onClick={() => p.onProbe("desktop")}>
-                <Monitor />
-                Check workspace
-              </Button>
             </div>
-            <p className="muted text-sm">
-              Open Settings → Connections → SSH in Codex Desktop and select the saved workspace root
-              shown above.
-            </p>
           </CardContent>
         </Card>
         <Card>

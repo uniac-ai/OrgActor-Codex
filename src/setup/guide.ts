@@ -1,9 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
 import { isAbsolute, join, normalize } from "node:path";
-import { waitsForDesktop } from "../actors/supervisor.js";
 import type { AppServerAdapter, CodexBackend } from "../codex/index.js";
 import {
-  type AccessPlan,
   type ConnectorSettings,
   Fault,
   type Guide,
@@ -13,8 +11,8 @@ import {
 } from "../management/schema.js";
 import type { CodexProvider } from "../provider/index.js";
 import { type RuntimeStore, token } from "../runtime/index.js";
-import { ALIAS, listening, type ThisMac, ThisMacAccess, thisMac } from "./access.js";
 import type { SetupService } from "./index.js";
+import { controlSocket, type ThisMac, thisMac } from "./this-mac.js";
 
 type Check = Omit<GuideStep, "id">;
 const done = (code: string, details?: Record<string, unknown>): Check => ({
@@ -46,15 +44,16 @@ export function hasAdapter(root: string): boolean {
 }
 
 /**
- * The guided setup for Codex Desktop over SSH to this Mac: eight ordered steps, each checked live,
- * a step waiting while an earlier one isn't done, and the consented actions that complete them.
+ * The guided setup for an Actor worked by Codex on this Mac: only what the Provider needs to run,
+ * checked in order, again and again in the background. A person acts only where a step says so,
+ * never in Codex Desktop, which is an optional viewer of the Actor's sessions.
  */
 export class GuideService {
-  readonly access: ThisMacAccess;
-  /** Where the Codex backend on this Mac reaches this Provider's MCP bridge; set at listen. */
+  /** Where Codex on this Mac reaches this Provider's MCP bridge; set at listen. */
   bridgeUrl?: string;
   private running?: Promise<Guide>;
-  /** Passed live checks, reused briefly so a poll re-runs only what isn't done. */
+  private timer?: NodeJS.Timeout;
+  /** Passed live checks, reused briefly so a check re-runs only what isn't done. */
   private passed = new Map<string, { until: number; value: unknown }>();
   constructor(
     private store: RuntimeStore,
@@ -62,18 +61,38 @@ export class GuideService {
     private backend: Pick<CodexBackend, "get">,
     private provider: Pick<CodexProvider, "snapshot" | "setEnabled">,
     readonly mac: ThisMac = thisMac(),
-  ) {
-    this.access = new ThisMacAccess(store, mac);
-  }
+  ) {}
   get available(): boolean {
     return this.mac.platform === "darwin";
   }
-  /** Whether the Provider's backend is this guide's SSH access, so its order governs attaching. */
+  /** Codex's app server for this Mac's home, as a backend endpoint. */
+  get endpoint(): string {
+    return `unix://${controlSocket(this.mac.home)}`;
+  }
+  /** Whether the Provider's backend is Codex on this Mac, so the guide's order governs it. */
   get inUse(): boolean {
-    return this.available && this.access.ownsBackend();
+    const backend = this.store.data.settings.backend;
+    return this.available && backend?.endpoint === this.endpoint;
+  }
+  codex(): string | undefined {
+    return this.mac.codex.find((path) => existsSync(path));
+  }
+  /** Start Codex's app server before each connect while it is the backend. */
+  async prepare(): Promise<void> {
+    const codex = this.codex();
+    if (this.inUse && codex) await this.mac.startDaemon(codex);
   }
   suggested(): string {
     return join(this.mac.home, `agentorg-${this.store.data.settings.hub?.providerId ?? "codex"}`);
+  }
+  /** Check the steps every interval, so a break or a recovery takes effect unwatched. */
+  start(interval = 10_000): void {
+    this.timer ??= setInterval(() => void this.check().catch(() => undefined), interval);
+    this.timer.unref();
+  }
+  stop(): void {
+    clearInterval(this.timer);
+    this.timer = undefined;
   }
   check(force = false): Promise<Guide> {
     if (force) this.passed.clear();
@@ -86,18 +105,10 @@ export class GuideService {
     const steps: GuideStep[] = [];
     const checks: Record<StepId, () => Check | Promise<Check>> = {
       hub: () => this.hub(),
-      login: async () =>
-        (await listening(this.mac.sshPort))
-          ? done("REMOTE_LOGIN_ON")
-          : missing("REMOTE_LOGIN_OFF", { port: this.mac.sshPort }),
-      access: () => this.sshAccess(),
-      desktop: async () =>
-        (await this.adapter())
-          ? done("APP_SERVER_INITIALIZED", { alias: ALIAS })
-          : missing("DESKTOP_NOT_CONNECTED", { alias: ALIAS }),
+      codex: () => this.codexStep(),
+      account: () => this.account(),
       folder: () => this.folder(),
       actor: () => this.actor(),
-      session: () => this.session(),
       tools: () => this.tools(),
     };
     if (this.available)
@@ -112,9 +123,6 @@ export class GuideService {
     return {
       available: this.available,
       inUse: this.inUse,
-      accessPresent:
-        this.available &&
-        (!!this.store.data.access || Object.values(this.access.inspect().present).some(Boolean)),
       checkedAt: new Date().toISOString(),
       folder: {
         ...(this.store.data.settings.workspaceRoot
@@ -153,31 +161,21 @@ export class GuideService {
         return broken("HUB_UNREACHABLE", where);
     }
   }
-  private async sshAccess(): Promise<Check> {
-    const found = this.access.inspect();
-    if (!found.codex) return broken("CODEX_NOT_FOUND", { searched: this.mac.codex.slice(0, 1) });
-    if (!found.hostKey) return broken("HOST_KEY_UNREADABLE", { path: this.mac.hostKey });
-    if (found.unsupported) return broken("PATH_UNSUPPORTED", { path: found.unsupported });
-    if (found.conflict) return broken("ACCESS_CONFLICT", { path: found.conflict, alias: ALIAS });
-    const absent = Object.entries(found.present)
-      .filter(([, present]) => !present)
-      .map(([part]) => part);
-    if (absent.length === 4) return missing("ACCESS_MISSING", { alias: ALIAS });
-    if (absent.length) return broken("ACCESS_INCOMPLETE", { absent });
-    const tested = await this.once(
-      `access:${this.store.data.revision}`,
-      () => this.access.test(),
-      (t) => !t.overridden.length && t.provider && !!t.desktop,
+  private async codexStep(): Promise<Check> {
+    const socket = controlSocket(this.mac.home);
+    if (!this.codex()) return broken("CODEX_NOT_FOUND", { searched: this.mac.codex.slice(0, 1) });
+    if (!this.inUse) return missing("CODEX_NOT_IN_USE", { socket });
+    if (!(await this.adapter())) return broken("CODEX_UNREACHABLE", { socket });
+    return done("APP_SERVER_INITIALIZED", { socket });
+  }
+  private async account(): Promise<Check> {
+    const probe = await this.once(
+      `account:${this.store.data.revision}`,
+      () => this.setup.probe("account"),
+      (p) => p.state === "ready",
     );
-    // An earlier Host or Match, or a global option, can take this-mac's values first.
-    if (tested.overridden.length)
-      return broken("ACCESS_OVERRIDDEN", {
-        path: join(this.mac.home, ".ssh", "config"),
-        options: tested.overridden,
-      });
-    if (!tested.provider) return broken("PROVIDER_KEY_REFUSED", { alias: ALIAS });
-    if (!tested.desktop) return broken("DESKTOP_KEY_REFUSED", { alias: ALIAS });
-    return done("ACCESS_READY", { alias: ALIAS, user: this.mac.user, codex: tested.desktop });
+    if (probe.state === "ready") return done(probe.code);
+    return probe.code === "PLAN_USAGE_DENIED" ? broken(probe.code) : missing(probe.code);
   }
   private async adapter(): Promise<AppServerAdapter | undefined> {
     try {
@@ -202,22 +200,14 @@ export class GuideService {
         disconnect: `agentorg-mcp disconnect codex --project ${shellQuote(root)}`,
       });
     const adapter = await this.adapter();
-    if (!adapter) return missing("DESKTOP_NOT_CONNECTED", { alias: ALIAS });
+    if (!adapter) return broken("CODEX_UNREACHABLE", { socket: controlSocket(this.mac.home) });
     const revision = this.store.data.revision;
-    const project = desktopProject(this.mac.desktopState, root);
-    // Desktop's own records are private and may change with any update; unread, nothing is known.
-    if (!project.known)
-      return broken("DESKTOP_PROJECTS_UNKNOWN", {
-        path: root,
-        alias: ALIAS,
-        state: this.mac.desktopState,
-      });
-    if (!project.remote)
-      return missing(project.local ? "FOLDER_LOCAL_PROJECT" : "FOLDER_NOT_IN_DESKTOP", {
-        path: root,
-        alias: ALIAS,
-        ...(project.local ? { project: project.local } : {}),
-      });
+    // Codex on this Mac shares Desktop's home, so the folder's project lists its sessions there.
+    const project = await this.once(
+      `project:${revision}:${root}`,
+      () => adapter.fileProject(root).catch(() => undefined),
+      Boolean,
+    );
     // A session created in this folder already shows Codex accepts it there.
     if (!this.attached().length) {
       const bridgeUrl = this.store.data.settings.bridgeUrl;
@@ -234,7 +224,7 @@ export class GuideService {
       );
       if (!accepted) return broken("PREFLIGHT_REFUSED", { path: root });
     }
-    return done("FOLDER_READY", { path: root, alias: ALIAS, project: project.remote });
+    return done("FOLDER_READY", { path: root, ...(project ? { project: project.name } : {}) });
   }
   private actor(): Check {
     const journal = Object.entries(this.store.data.journal);
@@ -253,23 +243,6 @@ export class GuideService {
       actors: attached.map((a) => ({ actorId: a.actorId, threadId: a.threadId })),
     });
   }
-  private session(): Check {
-    const waiting = this.attached().find((actor) => waitsForDesktop(actor, this.store.data));
-    const root = this.store.data.settings.workspaceRoot;
-    if (waiting)
-      return missing("SESSION_UNCONFIRMED", {
-        alias: ALIAS,
-        path: root,
-        ...(root ? { project: desktopProject(this.mac.desktopState, root).remote } : {}),
-        actorId: waiting.actorId,
-        threadId: waiting.threadId,
-      });
-    return done(
-      this.attached().some((actor) => actor.config.approvalAuthority === "desktop")
-        ? "SESSION_CONFIRMED"
-        : "CONFIRMATION_NOT_REQUIRED",
-    );
-  }
   private async tools(): Promise<Check> {
     const adapter = await this.adapter();
     for (const actor of this.attached()) {
@@ -285,7 +258,7 @@ export class GuideService {
     }
     return done("ACTOR_TOOLS_READY");
   }
-  /** Attaching waits until Desktop has the folder open and Codex accepts a session there. */
+  /** Attaching waits until Codex accepts a session in the folder. */
   async admitAttach(): Promise<void> {
     if (!this.inUse) return;
     const folder = (await this.check(true)).steps.find((s) => s.id === "folder");
@@ -295,42 +268,20 @@ export class GuideService {
         "Finish Setup through the workspace folder before attaching an Actor.",
       );
   }
-  planAccess(): AccessPlan {
-    if (!this.available)
-      throw new Fault("THIS_MAC_UNAVAILABLE", "This Provider doesn't run on a Mac it can set up.");
-    return this.access.plan();
-  }
-  /** Write the reviewed SSH access, then make it the Provider's backend. */
-  applyAccess(planId: string): Promise<void> {
+  /** Start Codex's app server on this Mac and make it the Provider's backend. */
+  useThisMac(): Promise<void> {
     return this.exclusive(async () => {
-      this.unbound();
-      const written = this.access.apply(planId);
-      try {
-        await this.reconfigure((current) => ({
-          ...current,
-          backend: {
-            kind: "ssh",
-            host: "127.0.0.1",
-            port: written.port,
-            user: written.user,
-            privateKey: written.privateKey,
-            knownHosts: written.knownHosts,
-          },
-          ...(current.bridgeUrl || !this.bridgeUrl ? {} : { bridgeUrl: this.bridgeUrl }),
-        }));
-      } catch (error) {
-        this.access.remove();
-        throw error;
-      }
-    });
-  }
-  /** Remove exactly what the guide wrote, and the backend it configured. */
-  removeAccess(): Promise<void> {
-    return this.exclusive(async () => {
-      this.unbound();
-      if (this.access.ownsBackend()) await this.reconfigure(({ backend: _, ...rest }) => rest);
-      this.access.remove();
-      this.passed.clear();
+      if (!this.available)
+        throw new Fault("THIS_MAC_UNAVAILABLE", "This Provider doesn't run on a Mac with Codex.");
+      const codex = this.codex();
+      if (!codex) throw new Fault("CODEX_NOT_FOUND", "Install Codex Desktop on this Mac first.");
+      if (!(await this.mac.startDaemon(codex)))
+        throw new Fault("CODEX_NOT_STARTED", "Codex's app server on this Mac didn't start.", 503);
+      await this.reconfigure((current) => ({
+        ...current,
+        backend: { kind: "app-server", endpoint: this.endpoint },
+        ...(current.bridgeUrl || !this.bridgeUrl ? {} : { bridgeUrl: this.bridgeUrl }),
+      }));
     });
   }
   chooseFolder(path: string): Promise<void> {
@@ -389,51 +340,3 @@ export class GuideService {
 }
 
 const shellQuote = (path: string) => `'${path.replaceAll("'", `'\\''`)}'`;
-
-/**
- * Where Codex Desktop has a folder: as a project on this-mac's connection, by its label, or as a
- * local project, by its name. Desktop records its remote projects only in its own state; the app
- * server's project/list holds its local projects, so it can't tell the two apart. That state is
- * private to Desktop: when it is missing or not in the form read here, `known` is false.
- */
-export function desktopProject(
-  statePath: string,
-  root: string,
-): { known: boolean; remote?: string; local?: string } {
-  let state: any;
-  try {
-    state = JSON.parse(readFileSync(statePath, "utf8"));
-  } catch {
-    return { known: false };
-  }
-  const projects = state?.["remote-projects"];
-  const locals = state?.["local-projects"];
-  if (
-    !Array.isArray(projects) ||
-    !projects.every(
-      (project) => typeof project?.hostId === "string" && typeof project?.remotePath === "string",
-    ) ||
-    (locals !== undefined &&
-      (typeof locals !== "object" || locals === null || Array.isArray(locals)))
-  )
-    return { known: false };
-  const list = (value: unknown): any[] => (Array.isArray(value) ? value : []);
-  const same = (path: unknown) => typeof path === "string" && path.replace(/\/+$/, "") === root;
-  const hosts = new Set([
-    `remote-ssh-discovered:${ALIAS}`,
-    ...list(state?.["codex-managed-remote-connections"])
-      .filter((connection) => connection?.alias === ALIAS)
-      .map((connection) => connection.hostId),
-  ]);
-  const remote = list(state?.["remote-projects"]).find(
-    (project) => hosts.has(project?.hostId) && same(project?.remotePath),
-  );
-  const local = Object.values(state?.["local-projects"] ?? {}).find(
-    (project: any) => Array.isArray(project?.rootPaths) && project.rootPaths.some(same),
-  ) as any;
-  return {
-    known: true,
-    ...(remote ? { remote: String(remote.label ?? root) } : {}),
-    ...(local ? { local: String(local.name ?? root) } : {}),
-  };
-}

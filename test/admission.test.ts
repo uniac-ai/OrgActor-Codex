@@ -4,81 +4,74 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { ActorController } from "../src/actors/controller.js";
-import { AppServerAdapter, SshAdapter } from "../src/codex/index.js";
+import { AppServerAdapter } from "../src/codex/index.js";
 import { RuntimeStore } from "../src/runtime/index.js";
 import { startServer } from "../src/server/index.js";
 import { SetupService } from "../src/setup/index.js";
 
-for (const binding of ["ssh", "app-server"] as const)
-  test(`${binding} execution rechecks live ChatGPT/plan admission before any native model start`, async (t) => {
-    const root = mkdtempSync(join(tmpdir(), "orgactor-admission-"));
-    t.after(() => rmSync(root, { recursive: true, force: true }));
-    const store = new RuntimeStore(root);
-    let accountType: string | null = "apiKey";
-    let included: boolean | null = true;
-    let provider = "openai";
-    let starts = 0;
-    const setupFrames: any[] = [];
-    const protocol = {
-      request: async (method: string, params: any) => {
-        if (method === "account/read")
-          return { account: accountType ? { type: accountType } : null };
-        if (method === "account/rateLimits/read") return { ordinaryUsageAllowed: included };
-        if (method === "thread/read") {
-          assert.equal(
-            params.includeTurns,
-            false,
-            "admission needs metadata, not history hydration",
-          );
-          return { thread: { modelProvider: provider } };
-        }
-        if (method === "thread/start") {
-          setupFrames.push(params);
-          return { thread: { id: "native-session" } };
-        }
-        if (method === "turn/start") {
-          starts++;
-          return { turn: { id: "native-turn" } };
-        }
-        throw new Error("Unexpected native call");
-      },
-    };
-    const native =
-      binding === "ssh" ? new SshAdapter(protocol as any) : new AppServerAdapter(protocol as any);
-    const setup = new SetupService(store, { get: async () => native } as any);
-    const execution = await setup.executionAdapter();
-    await execution.create({
-      cwd: "/owned",
-      bridgeUrl: "http://127.0.0.1/mcp",
-      bridgeToken: "private",
-    });
-
-    assert.equal(setupFrames[0].modelProvider, "openai");
-    assert.equal(setupFrames[0].config.forced_login_method, "chatgpt");
-    assert.equal(setupFrames[0].allowProviderModelFallback, false);
-    for (const denied of ["apiKey", null]) {
-      accountType = denied;
-      await assert.rejects(
-        execution.start("native-session", "task", "id"),
-        (error: any) => error.code === "EXECUTION_NOT_ADMITTED",
-      );
-    }
-    assert.equal(starts, 0);
-    accountType = "chatgpt";
-    assert.equal(await execution.start("native-session", "task", "id"), "native-turn");
-    assert.equal(starts, 1);
-    assert.equal((await setup.probe("account")).state, "ready");
-    accountType = "apiKey";
-    await assert.rejects(execution.start("native-session", "task", "next"));
-    assert.equal(starts, 1);
-    accountType = "chatgpt";
-    included = null;
-    await assert.rejects(execution.start("native-session", "task", "no-quota-observation"));
-    included = true;
-    provider = "custom-api";
-    await assert.rejects(execution.start("native-session", "task", "wrong-provider"));
-    assert.equal(starts, 1);
+test(`execution rechecks live ChatGPT/plan admission before any native model start`, async (t) => {
+  const root = mkdtempSync(join(tmpdir(), "orgactor-admission-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const store = new RuntimeStore(root);
+  let accountType: string | null = "apiKey";
+  let included: boolean | null = true;
+  let provider = "openai";
+  let starts = 0;
+  const setupFrames: any[] = [];
+  const protocol = {
+    request: async (method: string, params: any) => {
+      if (method === "account/read") return { account: accountType ? { type: accountType } : null };
+      if (method === "account/rateLimits/read") return { ordinaryUsageAllowed: included };
+      if (method === "thread/read") {
+        assert.equal(params.includeTurns, false, "admission needs metadata, not history hydration");
+        return { thread: { modelProvider: provider } };
+      }
+      if (method === "thread/start") {
+        setupFrames.push(params);
+        return { thread: { id: "native-session" } };
+      }
+      if (method === "turn/start") {
+        starts++;
+        return { turn: { id: "native-turn" } };
+      }
+      throw new Error("Unexpected native call");
+    },
+  };
+  const native = new AppServerAdapter(protocol as any);
+  const setup = new SetupService(store, { get: async () => native } as any);
+  const execution = await setup.executionAdapter();
+  await execution.create({
+    cwd: "/owned",
+    bridgeUrl: "http://127.0.0.1/mcp",
+    bridgeToken: "private",
   });
+
+  assert.equal(setupFrames[0].modelProvider, "openai");
+  assert.equal(setupFrames[0].config.forced_login_method, "chatgpt");
+  assert.equal(setupFrames[0].allowProviderModelFallback, false);
+  for (const denied of ["apiKey", null]) {
+    accountType = denied;
+    await assert.rejects(
+      execution.start("native-session", "task", "id"),
+      (error: any) => error.code === "EXECUTION_NOT_ADMITTED",
+    );
+  }
+  assert.equal(starts, 0);
+  accountType = "chatgpt";
+  assert.equal(await execution.start("native-session", "task", "id"), "native-turn");
+  assert.equal(starts, 1);
+  assert.equal((await setup.probe("account")).state, "ready");
+  accountType = "apiKey";
+  await assert.rejects(execution.start("native-session", "task", "next"));
+  assert.equal(starts, 1);
+  accountType = "chatgpt";
+  included = null;
+  await assert.rejects(execution.start("native-session", "task", "no-quota-observation"));
+  included = true;
+  provider = "custom-api";
+  await assert.rejects(execution.start("native-session", "task", "wrong-provider"));
+  assert.equal(starts, 1);
+});
 
 test("server composition supplies the Setup-owned guard to the actual Supervisor launch path", async (t) => {
   const root = mkdtempSync(join(tmpdir(), "orgactor-composed-admission-"));
@@ -123,91 +116,7 @@ test("server composition supplies the Setup-owned guard to the actual Supervisor
     config: { approvalAuthority: "desktop" },
     submissions: [],
   };
-  server.store.data.probes.desktop = {
-    state: "ready",
-    code: "OPERATOR_CONFIRMED_DESKTOP",
-    revision: server.store.data.revision,
-    checkedAt: new Date().toISOString(),
-  };
   server.actors.launch("actor");
   assert.equal(await observed, "EXECUTION_NOT_ADMITTED");
   assert.equal(starts, 0);
 });
-
-for (const desktop of ["unconfirmed", "confirmed", "stale"] as const)
-  test(`an Actor answered by Codex Desktop with ${desktop} Desktop ${desktop === "confirmed" ? "is admitted" : "stays unadmitted, saying why"}`, async (t) => {
-    const root = mkdtempSync(join(tmpdir(), "orgactor-desktop-gate-"));
-    t.after(() => rmSync(root, { recursive: true, force: true }));
-    const server = await startServer({ root, port: 0 });
-    t.after(() => server.close());
-    const original = ActorController.prototype.open;
-    const close = ActorController.prototype.close;
-    t.after(() => {
-      ActorController.prototype.open = original;
-      ActorController.prototype.close = close;
-    });
-    let opens = 0;
-    let closes = 0;
-    ActorController.prototype.open = async () => {
-      opens++;
-    };
-    ActorController.prototype.close = async () => {
-      closes++;
-    };
-    server.backend.get = async () =>
-      new AppServerAdapter({
-        request: async (method: string, params: any) => {
-          assert.equal(method, "thread/read");
-          return { thread: { id: params.threadId, cwd: "/owned" } };
-        },
-      } as any);
-    server.store.data.settings.workspaceRoot = "/owned";
-    const bootstrap = {
-      actorId: "actor",
-      hubUrl: "http://unused",
-      threadId: "",
-      bridgeToken: "private",
-      enabled: true,
-      config: { approvalAuthority: "desktop" as const },
-      submissions: [],
-    };
-    server.store.data.actors.actor = bootstrap;
-    // Creating its native session needs the Actor's Hub tools, so it is admitted for that.
-    server.actors.launch("actor");
-    assert.equal(opens, 1);
-    bootstrap.threadId = "thread";
-    if (desktop === "stale") {
-      server.store.data.probes.desktop = {
-        state: "ready",
-        code: "OPERATOR_CONFIRMED_DESKTOP",
-        revision: server.store.data.revision - 1,
-        checkedAt: new Date().toISOString(),
-      };
-    }
-    server.actors.launch("actor");
-    assert.equal(server.actors.actors.has("actor"), false);
-    assert.equal(closes, 1);
-    const state = async () => {
-      const response = await fetch(`${server.url}/api/state`);
-      return (await response.json()).actors[0].connectionState;
-    };
-    assert.equal(await state(), "awaiting-desktop");
-    if (desktop !== "confirmed") return;
-    const confirmed = await fetch(`${server.url}/api/setup/desktop-confirmation`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        threadId: "thread",
-        workspaceRoot: "/owned",
-        observation: "rendered",
-      }),
-    });
-    assert.equal(confirmed.status, 200);
-    assert.equal(server.actors.actors.has("actor"), true);
-    assert.equal(opens, 2);
-    assert.notEqual(await state(), "awaiting-desktop");
-    // The workspace check cannot see Desktop, so it keeps the confirmation and the Actor.
-    await fetch(`${server.url}/api/setup/probes/desktop`, { method: "POST" });
-    assert.equal(server.store.data.probes.desktop?.code, "OPERATOR_CONFIRMED_DESKTOP");
-    assert.equal(server.actors.actors.has("actor"), true);
-  });

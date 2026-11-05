@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { connectClient } from "@agentorg/cli/actor";
 import { BUILTINS } from "@agentorg/cli/contract";
@@ -11,10 +11,11 @@ import { cleanupOwned } from "./cleanup.js";
 import { hubPackageSha256, hubRevision, startPublicHub } from "./hub.js";
 
 // This opt-in test uses existing ChatGPT authentication; it never reads authentication tokens.
-const sshRoot = process.env.CODEX_SSH_PROOF_ROOT;
-assert.ok(sshRoot, "Set CODEX_SSH_PROOF_ROOT to the authorized SSH backend proof directory");
-const sshSeed = JSON.parse(readFileSync(join(sshRoot, "phase1-seed.json"), "utf8"));
-const localAdapter = process.argv.includes("--adapter=local");
+const proofRoot = process.env.CODEX_PROOF_ROOT;
+assert.ok(
+  proofRoot,
+  "Set CODEX_PROOF_ROOT to the authorized proof directory whose codex/ home runs the app server",
+);
 const setupOnly = process.argv.includes("--setup-only");
 const retainProof = process.argv.includes("--retain-proof");
 mkdirSync(".e2e", { recursive: true });
@@ -76,20 +77,11 @@ async function quota() {
 try {
   await module.provider.setEnabled(false);
   module.setup.configure({
-    backend: localAdapter
-      ? {
-          kind: "app-server",
-          endpoint: `unix://${join(sshRoot, "codex/app-server-control/app-server-control.sock")}`,
-        }
-      : {
-          kind: "ssh",
-          host: "127.0.0.1",
-          port: sshSeed.port,
-          user: sshSeed.user,
-          privateKey: readFileSync(join(sshRoot, "keys/client"), "utf8"),
-          knownHosts: readFileSync(join(sshRoot, "keys/known_hosts"), "utf8"),
-        },
-    workspaceRoot: sshRoot,
+    backend: {
+      kind: "app-server",
+      endpoint: `unix://${join(proofRoot, "codex/app-server-control/app-server-control.sock")}`,
+    },
+    workspaceRoot: proofRoot,
     bridgeUrl: `${module.url}/mcp`,
   });
   native = await module.backend.get();
