@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { request as httpRequest } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -50,6 +51,7 @@ test("the guide's API reviews, writes and removes SSH access, never returning a 
   assert.equal(guide.status, 200);
   assert.equal(guide.body.available, true);
   assert.equal(guide.body.inUse, false);
+  assert.equal(guide.body.accessPresent, false);
   assert.deepEqual(
     guide.body.steps.map((s: any) => s.id),
     ["hub", "login", "access", "desktop", "folder", "actor", "session", "tools"],
@@ -73,12 +75,15 @@ test("the guide's API reviews, writes and removes SSH access, never returning a 
   assert.equal(applied.body.settings.backend.kind, "ssh");
   assert.equal(applied.body.settings.backend.privateKeyPresent, true);
   assert.equal((await call("GET", "/setup/guide")).body.inUse, true);
+  // Present whatever step the guide is on, so it can always be removed.
+  assert.equal((await call("GET", "/setup/guide")).body.accessPresent, true);
   assert.equal(applied.body.settings.bridgeUrl, `${server.url}/mcp`);
   assert.ok(existsSync(join(home, ".ssh", "authorized_keys")));
   assert.equal((await call("POST", "/setup/guide/access/plan")).body.error.code, "ACCESS_PRESENT");
 
   const removed = await call("DELETE", "/setup/guide/access");
   assert.equal(removed.status, 200);
+  assert.equal((await call("GET", "/setup/guide")).body.accessPresent, false);
   assert.equal(removed.body.settings.backend, undefined);
   assert.equal(existsSync(join(home, ".ssh")), false);
 });
@@ -162,4 +167,25 @@ test("off a Mac the guide reports itself unavailable and writes nothing", async 
   );
   const plan = await fetch(`${server.url}/api/setup/guide/access/plan`, { method: "POST" });
   assert.equal((await plan.json()).error.code, "THIS_MAC_UNAVAILABLE");
+});
+
+test("the API answers only requests addressed to this machine", async (t) => {
+  const { server } = await guided(t);
+  const port = new URL(server.url).port;
+  const status = (host: string) =>
+    new Promise<number>((resolve, reject) => {
+      const request = httpRequest(
+        { host: "127.0.0.1", port, path: "/api/setup/guide", headers: { host } },
+        (response) => {
+          response.resume();
+          resolve(response.statusCode ?? 0);
+        },
+      );
+      request.on("error", reject);
+      request.end();
+    });
+  for (const host of [`127.0.0.1:${port}`, `localhost:${port}`, `[::1]:${port}`, "localhost"])
+    assert.equal(await status(host), 200, host);
+  for (const host of [`rebound.example:${port}`, "127.0.0.1.rebound.example", "[::2]"])
+    assert.equal(await status(host), 403, `Host "${host}"`);
 });

@@ -26,7 +26,17 @@ export function management(
   guide: GuideService,
 ) {
   const app = new Hono();
+  // Only requests addressed to this machine reach the API, so a page whose name was rebound to
+  // 127.0.0.1 can't drive it, nor the guide's writes to ~/.ssh.
   app.use("/api/*", async (c, next) => {
+    const host = c.req.header("host") ?? "";
+    const name = host.startsWith("[") ? host.slice(0, host.indexOf("]") + 1) : host.split(":")[0];
+    if (!["127.0.0.1", "localhost", "[::1]"].includes(name))
+      throw new Fault(
+        "HOST_NOT_ALLOWED",
+        "Open the console at 127.0.0.1, localhost or [::1].",
+        403,
+      );
     c.header("Cache-Control", "no-store");
     c.header("X-Content-Type-Options", "nosniff");
     await next();

@@ -112,6 +112,9 @@ export class GuideService {
     return {
       available: this.available,
       inUse: this.inUse,
+      accessPresent:
+        this.available &&
+        (!!this.store.data.access || Object.values(this.access.inspect().present).some(Boolean)),
       checkedAt: new Date().toISOString(),
       folder: {
         ...(this.store.data.settings.workspaceRoot

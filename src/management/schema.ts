@@ -131,6 +131,8 @@ export interface Guide {
   available: boolean;
   /** Whether the Provider's backend is the guide's SSH access, so its order governs attaching. */
   inUse: boolean;
+  /** Whether any of the guide's SSH access is in place, whatever step the guide is on. */
+  accessPresent: boolean;
   checkedAt: string;
   folder: { path?: string; suggested: string };
   steps: GuideStep[];
