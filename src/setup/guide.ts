@@ -187,8 +187,14 @@ export class GuideService {
     const tested = await this.once(
       `access:${this.store.data.revision}`,
       () => this.access.test(),
-      (t) => t.provider && !!t.desktop,
+      (t) => !t.overridden.length && t.provider && !!t.desktop,
     );
+    // An earlier Host or Match, or a global option, can take this-mac's values first.
+    if (tested.overridden.length)
+      return broken("ACCESS_OVERRIDDEN", {
+        path: join(this.mac.home, ".ssh", "config"),
+        options: tested.overridden,
+      });
     if (!tested.provider) return broken("PROVIDER_KEY_REFUSED", { alias: ALIAS });
     if (!tested.desktop) return broken("DESKTOP_KEY_REFUSED", { alias: ALIAS });
     return done("ACCESS_READY", { alias: ALIAS, user: this.mac.user, codex: tested.desktop });
@@ -213,7 +219,7 @@ export class GuideService {
       return broken("FOLDER_HAS_ADAPTER", {
         path: root,
         suggested,
-        disconnect: `agentorg-mcp disconnect codex --project ${root}`,
+        disconnect: `agentorg-mcp disconnect codex --project ${shellQuote(root)}`,
       });
     const adapter = await this.adapter();
     if (!adapter) return missing("DESKTOP_NOT_CONNECTED", { alias: ALIAS });
@@ -301,48 +307,68 @@ export class GuideService {
     return this.access.plan();
   }
   /** Write the reviewed SSH access, then make it the Provider's backend. */
-  async applyAccess(planId: string): Promise<void> {
-    this.unbound();
-    const written = this.access.apply(planId);
-    try {
-      await this.reconfigure((current) => ({
-        ...current,
-        backend: {
-          kind: "ssh",
-          host: "127.0.0.1",
-          port: written.port,
-          user: written.user,
-          privateKey: written.privateKey,
-          knownHosts: written.knownHosts,
-        },
-        ...(current.bridgeUrl || !this.bridgeUrl ? {} : { bridgeUrl: this.bridgeUrl }),
-      }));
-    } catch (error) {
-      this.access.remove();
-      throw error;
-    }
+  applyAccess(planId: string): Promise<void> {
+    return this.exclusive(async () => {
+      this.unbound();
+      const written = this.access.apply(planId);
+      try {
+        await this.reconfigure((current) => ({
+          ...current,
+          backend: {
+            kind: "ssh",
+            host: "127.0.0.1",
+            port: written.port,
+            user: written.user,
+            privateKey: written.privateKey,
+            knownHosts: written.knownHosts,
+          },
+          ...(current.bridgeUrl || !this.bridgeUrl ? {} : { bridgeUrl: this.bridgeUrl }),
+        }));
+      } catch (error) {
+        this.access.remove();
+        throw error;
+      }
+    });
   }
   /** Remove exactly what the guide wrote, and the backend it configured. */
-  async removeAccess(): Promise<void> {
-    this.unbound();
-    if (this.access.ownsBackend()) await this.reconfigure(({ backend: _, ...rest }) => rest);
-    this.access.remove();
+  removeAccess(): Promise<void> {
+    return this.exclusive(async () => {
+      this.unbound();
+      if (this.access.ownsBackend()) await this.reconfigure(({ backend: _, ...rest }) => rest);
+      this.access.remove();
+      this.passed.clear();
+    });
   }
-  async chooseFolder(path: string): Promise<void> {
-    if (!isAbsolute(path) || normalize(path) !== path || path.length > 1024)
-      throw new Fault("FOLDER_INVALID", "Choose an absolute folder path.", 422);
-    if (hasAdapter(path))
-      throw new Fault(
-        "FOLDER_HAS_ADAPTER",
-        "AgentOrg's Codex adapter is connected in this folder, and Codex would refuse the Actor's session there. Choose a folder of its own, or disconnect the adapter.",
-      );
-    await this.reconfigure((current) => ({ ...current, workspaceRoot: path }));
+  chooseFolder(path: string): Promise<void> {
+    return this.exclusive(async () => {
+      if (
+        !isAbsolute(path) ||
+        normalize(path) !== path ||
+        (path.length > 1 && path.endsWith("/")) ||
+        [...path].some((c) => c.charCodeAt(0) < 32 || c.charCodeAt(0) === 127) ||
+        path.length > 1024
+      )
+        throw new Fault("FOLDER_INVALID", "Choose an absolute folder path.", 422);
+      if (hasAdapter(path))
+        throw new Fault(
+          "FOLDER_HAS_ADAPTER",
+          "AgentOrg's Codex adapter is connected in this folder, and Codex would refuse the Actor's session there. Choose a folder of its own, or disconnect the adapter.",
+        );
+      await this.reconfigure((current) => ({ ...current, workspaceRoot: path }));
+    });
   }
   createFolder(): void {
     const root = this.store.data.settings.workspaceRoot;
     if (!root) throw new Fault("FOLDER_UNCHOSEN", "Choose the workspace folder first.");
     mkdirSync(root, { recursive: true });
     this.passed.clear();
+  }
+  /** Setup changes run one at a time, so none reads settings another is about to replace. */
+  private queue: Promise<unknown> = Promise.resolve();
+  private exclusive<T>(work: () => Promise<T>): Promise<T> {
+    const run = this.queue.then(work);
+    this.queue = run.catch(() => undefined);
+    return run;
   }
   private unbound(): void {
     if (Object.keys(this.store.data.journal).length || Object.keys(this.store.data.actors).length)
@@ -367,6 +393,8 @@ export class GuideService {
     }
   }
 }
+
+const shellQuote = (path: string) => `'${path.replaceAll("'", `'\\''`)}'`;
 
 /** Whether Codex Desktop has the folder among its projects on this backend. */
 async function projectOpen(adapter: AppServerAdapter, root: string): Promise<boolean> {

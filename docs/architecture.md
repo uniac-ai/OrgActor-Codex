@@ -39,16 +39,19 @@ Managed native sessions request the legacy persisted history contract used by re
 When this Provider runs on a Mac, Setup guides one path: Codex Desktop on this Mac, reached over SSH to this Mac, where Desktop both shows and answers an Actor's session. GuideService checks eight ordered steps live: Hub admission, Remote Login (a TCP connect to port 22), SSH access, Codex Desktop connected (the Provider's proxy initializes the Codex daemon that Desktop's SSH connection starts), the workspace folder, the Actor, its session confirmed in Desktop, and the Actor's tools. Each step reports `done`, `missing`, `broken` or `waiting` with a stable code and the facts behind it; a step waits while an earlier one isn't done. Passed live checks are reused for 30 seconds; failed ones run again on every check.
 
 SSH access is written only after the person reviews every write. The review makes Ed25519 keys in memory and lists:
+- the Provider's key and known host, which its SSH backend connects with, in the runtime folder;
 - Desktop's key, `known_hosts` from the Mac's own host key, and the `desktop-shell` wrapper, in the runtime's `ssh/` folder;
-- two `authorized_keys` lines, both from 127.0.0.1 and ::1: the Provider key with `restrict` and forced to `codex app-server proxy`, and the Desktop key through the wrapper;
-- a `Host this-mac` block in `~/.ssh/config`, after a timestamped backup;
+- two `authorized_keys` lines, both from 127.0.0.1 and ::1: the Provider key with `restrict` and forced to `codex app-server proxy`, and the Desktop key through the wrapper, with no agent, port or X11 forwarding;
+- a `Host this-mac` block in `~/.ssh/config`, after a timestamped backup, before the file's first `Host` or `Match` line, since ssh takes each option's first value;
 - the Provider's backend, with its key.
 
-Each block has BEGIN and END lines naming this runtime, and the runtime records what was written. Removal reverses exactly that, keeps what the person added since, and deletes the backup only once the config matches it again. A `Host this-mac` the guide didn't write is a conflict and is never overwritten.
+A change to `~/.ssh` or Codex after the review makes it stale (`PLAN_STALE`); the person reviews again.
+
+Each block has BEGIN and END lines naming this runtime, and the runtime records what was written. Removal reverses exactly that, keeps what the person added since, and deletes the backup only once the config matches it again. Without the record, as after a runtime is replaced at the same path, removal takes the blocks naming this runtime and its `ssh/` files. A `Host this-mac` the guide didn't write is a conflict and is never overwritten. The step's live check compares `ssh -G` for `this-mac` with the block's values, and reports an earlier option that overrides one (`ACCESS_OVERRIDDEN`).
 
 The workspace folder is the Provider's workspace root. A folder whose own `.codex/config.toml` defines `mcp_servers.org`, AgentOrg's Codex adapter, is refused when chosen, since Codex refuses the Actor's session there. The folder is created on the person's click. It is ready once Codex Desktop lists it among the backend's projects and an ephemeral `thread/start` with the Actor's exact settings succeeds and is unsubscribed; a session already created there stands in for that preflight. While the guide's access is the backend, attaching an Actor waits for that step (`SETUP_INCOMPLETE`).
 
-The guide's setup changes pause the Provider around the change and are refused while Actors or journal records are bound. Detach forgets an Actor here: its bootstrap, its journal and a Desktop confirmation of its session. Its Hub identity and native session stay, so it can be attached again, and setup can change once nothing is bound.
+The guide's setup changes run one at a time, pause the Provider around the change, and are refused while Actors or journal records are bound. A folder path must be absolute and in its plain form, with no trailing slash or control characters. Detach forgets an Actor here: its bootstrap, its journal and a Desktop confirmation of its session. Its Hub identity and native session stay, so it can be attached again, and setup can change once nothing is bound.
 
 ## Module contracts and layout
 
