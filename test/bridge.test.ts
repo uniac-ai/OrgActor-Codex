@@ -425,17 +425,17 @@ test("multibyte unauthorized Bearer input returns 401 and the assembled server r
   assert.equal((await fetch(`${module.url}/api/state`)).status, 200);
 });
 
-test("the native session is offered its chosen level's Hub interfaces and the report guidance", async (t) => {
-  const dir = mkdtempSync(join(tmpdir(), "orgactor-level-"));
+test("the native session is offered every Hub interface and the report guidance", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "orgactor-catalog-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const module = await startServer({ root: dir, port: 0 });
   t.after(() => module.close());
   const bootstrap = {
     actorId: "actor",
     hubUrl: "http://unused.invalid",
-    config: { approvalAuthority: "desktop" as const, level: "report" as const },
+    config: { approvalAuthority: "desktop" as const },
     threadId: "thread",
-    bridgeToken: "OWNED_LEVEL_CAPABILITY",
+    bridgeToken: "OWNED_CATALOG_CAPABILITY",
     enabled: true,
     submissions: [],
   };
@@ -446,7 +446,7 @@ test("the native session is offered its chosen level's Hub interfaces and the re
   const actor = new ActorController(bootstrap, module.store, async () => adapter as any);
   actor.adapter = adapter as any;
   await actor.reconcile();
-  const tool = (id: string, name: string, level?: string): Tool => ({
+  const tool = (id: string, name: string): Tool => ({
     name,
     inputSchema: { type: "object" },
     _meta: {
@@ -456,16 +456,14 @@ test("the native session is offered its chosen level's Hub interfaces and the re
         interface: name,
         one_way: false,
         long_running: false,
-        ...(level ? { level } : {}),
       },
     },
   });
   const tools = [
-    tool("hub:work", "work_update", "report"),
-    tool("hub:messages", "message_send", "report"),
-    tool("hub:team", "team", "team"),
-    tool("hub:actors", "actor_close", "organization"),
-    tool("hub:legacy", "untagged"),
+    tool("hub:work", "work_update"),
+    tool("hub:messages", "message_send"),
+    tool("hub:team", "team"),
+    tool("hub:actors", "actor_close"),
   ];
   let dispatches = 0;
   actor.hubReady = true;
@@ -480,11 +478,11 @@ test("the native session is offered its chosen level's Hub interfaces and the re
     },
   } as any;
   module.actors.actors.set("actor", actor);
-  const client = new Client({ name: "native-level-test", version: "1" });
+  const client = new Client({ name: "native-catalog-test", version: "1" });
   t.after(() => client.close());
   await client.connect(
     new StreamableHTTPClientTransport(new URL(`${module.url}/mcp`), {
-      requestInit: { headers: { Authorization: "Bearer OWNED_LEVEL_CAPABILITY" } },
+      requestInit: { headers: { Authorization: "Bearer OWNED_CATALOG_CAPABILITY" } },
     }),
   );
   const guidance = client.getInstructions() ?? "";
@@ -500,26 +498,19 @@ test("the native session is offered its chosen level's Hub interfaces and the re
     /You ask only on Work you own, and the ask's formID is the askID other tools take\./,
   );
   assert.match(guidance, /an approval ask on your most recently updated active Work/);
-  // Every tool the guidance names is one the Hub presents at the Report level.
+  assert.doesNotMatch(guidance, /manager|raise/i);
+  // Every tool the guidance names is a Hub interface.
   const named = [...new Set(guidance.match(/\b[a-z]+_[a-z_]+\b/g))];
   assert.ok(named.length > 0);
-  for (const name of named)
-    assert.equal((BUILTINS as Record<string, { level?: string }>)[name]?.level, "report", name);
+  for (const name of named) assert.ok(Object.hasOwn(BUILTINS, name), name);
   assert.doesNotMatch(guidance, /set blocked/i);
   assert.deepEqual(
     (await client.listTools()).tools.map((t) => t.name),
-    ["work_update", "message_send"],
+    ["work_update", "message_send", "team", "actor_close"],
   );
   await assert.rejects(
-    client.callTool({ name: "team", arguments: {}, _meta: { threadId: "thread" } }),
+    client.callTool({ name: "form_create", arguments: {}, _meta: { threadId: "thread" } }),
     /no such interface/,
   );
-  bootstrap.config = { approvalAuthority: "desktop", level: "team" } as any;
-  assert.deepEqual(
-    (await client.listTools()).tools.map((t) => t.name),
-    ["work_update", "message_send", "team"],
-  );
-  delete (bootstrap.config as { level?: string }).level;
-  assert.equal((await client.listTools()).tools.length, 5);
   assert.equal(dispatches, 0);
 });

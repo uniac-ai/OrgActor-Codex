@@ -4,7 +4,6 @@ import { BUILTINS, Form, Work } from "@agentorg/cli/contract";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import type { CodexAdapter, NativeEvent } from "../codex/index.js";
 import { ActorHubSession } from "../hub/actor.js";
-import { catalogOf, presents } from "../hub/catalog.js";
 import { type ActorSnapshot, Fault } from "../management/schema.js";
 import { type Bootstrap, hash, type RuntimeStore, type Submission } from "../runtime/index.js";
 import { nativeForm } from "./forms.js";
@@ -491,7 +490,7 @@ export class ActorController extends EventEmitter {
           this.lastError = bound.some((b) => b.answerAttempt)
             ? "Native answer delivery is unconfirmed and will not be replayed."
             : bound.some((b) => b.formId)
-              ? "The approval ask is waiting for a manager's answer."
+              ? "The approval ask is waiting for the answer of the Actor it routes to."
               : "No approval ask is issued yet; the request stays with its native input owner.";
         })
         .finally(() => this.routing.delete(id));
@@ -656,7 +655,7 @@ export class ActorController extends EventEmitter {
     while (currentRequest()) {
       const form = await readAsk(binding.formId);
       if (form.formID !== binding.formId) return;
-      // Only the asker's managers answer an approval, and the first answer resolves it.
+      // Only the Actor an approval routes to answers it, and the first answer resolves it.
       const [answered] = Object.values(form.responses);
       if (answered) {
         if (
@@ -792,7 +791,7 @@ export class ActorController extends EventEmitter {
       this.bootstrap.config.approvalAuthority === "desktop"
         ? "Answer this request in Codex Desktop."
         : bound
-          ? "Answer the matching approval ask as one of this Actor's managers."
+          ? "Answer the matching approval ask as the Actor it routes to: its Work's requester, or the person."
           : "This request has no bound ask and remains pending for its native input owner.",
     );
   }
@@ -868,14 +867,8 @@ export class ActorController extends EventEmitter {
   private async frame(hub: ActorHubSession, item: Item): Promise<string | undefined> {
     const from = item.from.name;
     const title = JSON.stringify(item.title);
-    // Answering and raising name work_answer, which the Actor's level may not present.
-    const answer = catalogOf(hub.tools).get("hub:work")?.interfaces.get("work_answer");
-    const answering = hub.tools.some(
-      (tool) => tool.name === answer && presents(this.bootstrap.config.level, tool),
-    );
     switch (item.kind) {
-      case "answer":
-      case "raised": {
+      case "answer": {
         const found = await this.read(hub, "hub:work", "work_get", { askID: item.recordID });
         const work = isForm(found) ? undefined : Work.parse(found);
         const ask = work
@@ -890,8 +883,6 @@ export class ActorController extends EventEmitter {
           )
         )
           return undefined;
-        if (item.kind === "raised")
-          return `${from} raised your ask ${title} (${item.recordID}) to its manager; it stays open until someone answers it. Keep working on what doesn't depend on it.`;
         const response = ask.responses[item.from.actorID];
         const answers = Object.entries(response?.answers ?? {})
           .map(([field, answer]) => `${field}: ${answer}`)
@@ -907,7 +898,7 @@ export class ActorController extends EventEmitter {
         return `${from} answered your ask ${title} (${item.recordID}): ${answers}.${note} Apply it${then}. The ask records the answer; ${ask.status === "open" ? "it collects more until you close it" : "it is resolved"}.`;
       }
       case "ask":
-        return `${from} routes you the ask ${title} (${item.recordID}). Read it with work_get {askID: "${item.recordID}"}${answering ? ", then answer it with work_answer {askID, answers, note?}, or raise it one manager up with work_answer {askID, raise: true}" : ""}.`;
+        return `${from} routes you the ask ${title} (${item.recordID}). Read it with work_get {askID: "${item.recordID}"}, then answer it with work_answer {askID, answers, note?}.`;
       case "assigned":
         return `${from} gave you Work ${title} (${item.recordID}). Read it with work_get; set it active with work_update when you start.`;
       case "updated": {
@@ -925,9 +916,7 @@ export class ActorController extends EventEmitter {
           await this.read(hub, "hub:work", "work_get", { ticketID: item.recordID }),
         );
         const id = submission ? `"${submission.submissionID}"` : "<its submissionID>";
-        const answer = answering
-          ? `, then answer it with work_answer {askID: ${id}, answers: {verdict: "accepted" or "changes_requested"}, note?}; requesting changes needs the note`
-          : "";
+        const answer = `, then answer it with work_answer {askID: ${id}, answers: {verdict: "accepted" or "changes_requested"}, note?}; requesting changes needs the note`;
         // A submission a close re-routes comes from the Actor that closed, not from its submitter.
         return submission && submission.ownerID !== item.from.actorID
           ? `${from} closed the Actor the submission of ${title} (${item.recordID}) waited on; it now waits for your answer. Read the submission with work_get${answer}.`

@@ -10,7 +10,7 @@ import { Fault } from "../src/management/schema.js";
 import { type Bootstrap, hash, RuntimeStore } from "../src/runtime/index.js";
 import { at, attention, form, message } from "./workspace-fixtures.js";
 
-/** The Hub's work_answer, at the Team level. */
+/** The Hub's work_answer. */
 const answering = {
   name: "work_answer",
   inputSchema: { type: "object" },
@@ -21,7 +21,6 @@ const answering = {
       interface: "work_answer",
       one_way: false,
       long_running: false,
-      level: "team",
     },
   },
 };
@@ -533,92 +532,75 @@ for (const matches of [0, 2])
     assert.match(f.actor.lastError ?? "", matches ? /Multiple asks/ : /issuance is uncertain/);
   });
 
-for (const level of [undefined, "team", "report"] as const)
-  test(`each item is framed with what to do at ${level ?? "no"} level, naming work_answer only where presented`, async (t) => {
-    const f = fixture(t);
-    if (level) f.bootstrap.config.level = level;
-    const fields = [{ name: "field_native_0", label: "Decision", required: true }];
-    f.bootstrap.approvals = {
-      native: {
-        requestId: "r",
-        threadId: "thread",
-        turnId: "turn",
-        method: "m",
-        fields,
-        state: "waiting",
-      },
-    };
-    const which = form(
-      { title: "Which?", fields: [{ name: "choice", label: "Choose", required: true }] },
-      { formID: "raised", approval: false, workID: "w-active" },
-    );
-    (f.actor.hub as any).call = async (name: string, args: any) => {
-      assert.equal(name, "work_get");
-      if (args.askID === "raised") return ok({ ...active, asks: [which] });
-      // The executor's own approval ask, on the Actor's Work, answered and raised.
-      if (args.askID === "own")
-        return ok({
-          ...active,
-          asks: [form({ title: "Grant?", fields }, { formID: "own", workID: "w-active" })],
-        });
-      // Work the Actor requested of its report, and Work its manager gave it.
-      if (args.ticketID === "w2")
-        return ok({
-          ...active,
-          ticketID: "w2",
-          ownerID: "report",
-          status: "submitted",
-          submission: { submissionID: "s2", ownerID: "report", result: "Done", evidence: [], at },
-        });
-      // A submission the manager's close of its requester re-routed to the Actor.
-      if (args.ticketID === "w6")
-        return ok({
-          ...active,
-          ticketID: "w6",
-          ownerID: "report",
-          status: "submitted",
-          submission: { submissionID: "s6", ownerID: "report", result: "Done", evidence: [], at },
-        });
-      const given = { ...active, requesterID: "manager" };
-      if (args.ticketID === "w3") return ok({ ...given, ticketID: "w3", status: "cancelled" });
-      assert.deepEqual(args, { ticketID: "w-active" });
-      return ok(given);
-    };
-    const items = attention("1", [
-      { kind: "ask", recordID: "a1", from: "report", title: "Delete the bucket?" },
-      { kind: "review_due", recordID: "w2", from: "report", title: "Prove the backups" },
-      { kind: "review_due", recordID: "w6", title: "Restore drill" },
-      { kind: "raised", recordID: "raised", title: "Which?" },
-      { kind: "raised", recordID: "own", title: "Grant?" },
-      { kind: "answer", recordID: "own", title: "Grant?" },
-      { kind: "updated", recordID: "w-active", title: "Build" },
-      { kind: "updated", recordID: "w3", title: "Old plan" },
-      { kind: "assigned", recordID: "w4", title: "Index it" },
-      { kind: "reviewed", recordID: "w5", title: "Migrate" },
-    ]).items;
-    for (const item of items) await (f.actor as any).deliver(f.actor.hub, item);
-    const answering = level !== "report";
-    assert.deepEqual(
-      f.bootstrap.submissions.map((s) => s.text),
-      [
-        answering
-          ? 'report routes you the ask "Delete the bucket?" (a1). Read it with work_get {askID: "a1"}, then answer it with work_answer {askID, answers, note?}, or raise it one manager up with work_answer {askID, raise: true}.'
-          : 'report routes you the ask "Delete the bucket?" (a1). Read it with work_get {askID: "a1"}.',
-        answering
-          ? 'report submitted "Prove the backups" (w2) for your answer. Read the submission with work_get, then answer it with work_answer {askID: "s2", answers: {verdict: "accepted" or "changes_requested"}, note?}; requesting changes needs the note.'
-          : 'report submitted "Prove the backups" (w2) for your answer. Read the submission with work_get.',
-        answering
-          ? 'manager closed the Actor the submission of "Restore drill" (w6) waited on; it now waits for your answer. Read the submission with work_get, then answer it with work_answer {askID: "s6", answers: {verdict: "accepted" or "changes_requested"}, note?}; requesting changes needs the note.'
-          : 'manager closed the Actor the submission of "Restore drill" (w6) waited on; it now waits for your answer. Read the submission with work_get.',
-        'manager raised your ask "Which?" (raised) to its manager; it stays open until someone answers it. Keep working on what doesn\'t depend on it.',
-        'manager changed your Work "Build" (w-active). Read it with work_get before your next write to it.',
-        'manager cancelled your Work "Old plan" (w3); its open asks are cancelled. Stop working on it.',
-        'manager gave you Work "Index it" (w4). Read it with work_get; set it active with work_update when you start.',
-        'manager answered your submission of "Migrate" (w5). Read the answer with work_get; on requested changes, address them and submit again.',
-      ],
-      "a native request's approval ask, answered or raised, is the request's, not input",
-    );
-  });
+test("each item is framed with what to do, naming work_answer for asks and submissions", async (t) => {
+  const f = fixture(t);
+  const fields = [{ name: "field_native_0", label: "Decision", required: true }];
+  f.bootstrap.approvals = {
+    native: {
+      requestId: "r",
+      threadId: "thread",
+      turnId: "turn",
+      method: "m",
+      fields,
+      state: "waiting",
+    },
+  };
+  (f.actor.hub as any).call = async (name: string, args: any) => {
+    assert.equal(name, "work_get");
+    // The executor's own approval ask, on the Actor's Work, answered.
+    if (args.askID === "own")
+      return ok({
+        ...active,
+        asks: [form({ title: "Grant?", fields }, { formID: "own", workID: "w-active" })],
+      });
+    // Work the Actor requested of another, and Work another gave it.
+    if (args.ticketID === "w2")
+      return ok({
+        ...active,
+        ticketID: "w2",
+        ownerID: "report",
+        status: "submitted",
+        submission: { submissionID: "s2", ownerID: "report", result: "Done", evidence: [], at },
+      });
+    // A submission the close of its requester passed to the Actor, the person.
+    if (args.ticketID === "w6")
+      return ok({
+        ...active,
+        ticketID: "w6",
+        ownerID: "report",
+        status: "submitted",
+        submission: { submissionID: "s6", ownerID: "report", result: "Done", evidence: [], at },
+      });
+    const given = { ...active, requesterID: "manager" };
+    if (args.ticketID === "w3") return ok({ ...given, ticketID: "w3", status: "cancelled" });
+    assert.deepEqual(args, { ticketID: "w-active" });
+    return ok(given);
+  };
+  const items = attention("1", [
+    { kind: "ask", recordID: "a1", from: "report", title: "Delete the bucket?" },
+    { kind: "review_due", recordID: "w2", from: "report", title: "Prove the backups" },
+    { kind: "review_due", recordID: "w6", title: "Restore drill" },
+    { kind: "answer", recordID: "own", title: "Grant?" },
+    { kind: "updated", recordID: "w-active", title: "Build" },
+    { kind: "updated", recordID: "w3", title: "Old plan" },
+    { kind: "assigned", recordID: "w4", title: "Index it" },
+    { kind: "reviewed", recordID: "w5", title: "Migrate" },
+  ]).items;
+  for (const item of items) await (f.actor as any).deliver(f.actor.hub, item);
+  assert.deepEqual(
+    f.bootstrap.submissions.map((s) => s.text),
+    [
+      'report routes you the ask "Delete the bucket?" (a1). Read it with work_get {askID: "a1"}, then answer it with work_answer {askID, answers, note?}.',
+      'report submitted "Prove the backups" (w2) for your answer. Read the submission with work_get, then answer it with work_answer {askID: "s2", answers: {verdict: "accepted" or "changes_requested"}, note?}; requesting changes needs the note.',
+      'manager closed the Actor the submission of "Restore drill" (w6) waited on; it now waits for your answer. Read the submission with work_get, then answer it with work_answer {askID: "s6", answers: {verdict: "accepted" or "changes_requested"}, note?}; requesting changes needs the note.',
+      'manager changed your Work "Build" (w-active). Read it with work_get before your next write to it.',
+      'manager cancelled your Work "Old plan" (w3); its open asks are cancelled. Stop working on it.',
+      'manager gave you Work "Index it" (w4). Read it with work_get; set it active with work_update when you start.',
+      'manager answered your submission of "Migrate" (w5). Read the answer with work_get; on requested changes, address them and submit again.',
+    ],
+    "a native request's approval ask, answered, is the request's, not input",
+  );
+});
 
 test("a binding from before asks on Work with an uncertain issuance stays pending without reading Work", async (t) => {
   const f = fixture(t);

@@ -44,7 +44,7 @@ type Option = NonNullable<Form["fields"][number]["options"]>[number];
 const option = (value: string, detail?: string): Option =>
   detail?.trim() ? { value, detail } : { value };
 
-/** A bounded projection of a native request into an approval ask only the Actor's managers answer. */
+/** A bounded projection of a native request into an approval ask only the Actor it routes to answers. */
 export function nativeForm(method: string, params: any, reference: string) {
   const name = (index: number) => `field_${reference}_${index}`;
   const finish = (
@@ -267,8 +267,7 @@ export function nativeForm(method: string, params: any, reference: string) {
                 `requestedSchema.properties.${key}.${"enumNames" in property && property.enumNames ? "enumNames" : "enum"}`,
               )
             : undefined;
-      const maximumAnswerLength =
-        BUILTINS.work_answer.request.shape.answers.unwrap().valueType.maxLength;
+      const maximumAnswerLength = BUILTINS.work_answer.request.shape.answers.valueType.maxLength;
       if (
         "minLength" in property &&
         property.minLength !== undefined &&

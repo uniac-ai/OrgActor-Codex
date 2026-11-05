@@ -85,7 +85,7 @@ for (const delayed of ["item", "turn-and-item"])
             for (const tool of list.tools)
               assert.deepEqual(
                 Object.keys(tool._meta?.["agentorg/tool"] as object).sort(),
-                ["id", "name", "interface", "one_way", "long_running", "level"].sort(),
+                ["id", "name", "interface", "one_way", "long_running"].sort(),
               );
             assert.equal(actor.threadId, "");
             await assert.rejects(
@@ -123,7 +123,7 @@ for (const delayed of ["item", "turn-and-item"])
             const call = mcp
               .callTool({
                 name: "team",
-                arguments: { depth: 0 },
+                arguments: {},
                 _meta: {
                   threadId: "native-thread",
                   sessionId: "native-session",
@@ -145,7 +145,7 @@ for (const delayed of ["item", "turn-and-item"])
             const result = await call;
             assert.equal(result.isError, undefined);
             const team = BUILTINS.team.response.parse(result.structuredContent);
-            assert.equal(team.positions[0].id, actor.bootstrap.actorId);
+            assert.ok(team.positions.some((position) => position.id === actor.bootstrap.actorId));
             assert.equal(state.responseReleased, false);
             reply({ turn: { id: "native-turn" } });
             state.responseReleased = true;
