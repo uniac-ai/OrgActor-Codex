@@ -244,6 +244,26 @@ export class CodexProvider {
       );
     }
   }
+  /**
+   * Forget an Actor here: its bootstrap, its provisioning journal and a Desktop confirmation of its
+   * session. Its Hub identity and its native session stay, so it can be attached again.
+   */
+  async detach(actorId: string): Promise<void> {
+    const keys = Object.keys(this.store.data.journal).filter(
+      (key) => key.slice(key.lastIndexOf("|") + 1) === actorId,
+    );
+    if (!Object.hasOwn(this.store.data.actors, actorId) && !keys.length)
+      throw new Fault("ACTOR_NOT_FOUND", "This Actor is not attached.", 404);
+    if (keys.some((key) => this.store.data.journal[key].state === "creating"))
+      throw new Fault("CREATION_IN_PROGRESS", "Wait for this Actor's session to be created.");
+    const threadId = this.store.data.actors[actorId]?.threadId;
+    if (Object.hasOwn(this.store.data.actors, actorId)) await this.stop(actorId);
+    delete this.store.data.actors[actorId];
+    for (const key of keys) delete this.store.data.journal[key];
+    if (threadId && this.store.data.probes.desktop?.details?.threadId === threadId)
+      delete this.store.data.probes.desktop;
+    this.store.save();
+  }
   async setEnabled(enabled: boolean): Promise<void> {
     this.store.data.providerEnabled = enabled;
     if (enabled) delete this.store.data.providerSuspended;

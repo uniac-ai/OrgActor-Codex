@@ -10,6 +10,7 @@ import { management } from "../management/index.js";
 import { Fault, HubConfig } from "../management/schema.js";
 import { CodexProvider } from "../provider/index.js";
 import { RuntimeStore } from "../runtime/index.js";
+import { GuideService } from "../setup/guide.js";
 import { SetupService } from "../setup/index.js";
 
 export async function startServer(options: {
@@ -44,6 +45,7 @@ export async function startServer(options: {
     (id) => actors.setEnabled(id, false),
   );
   const setup: SetupService = new SetupService(store, backend, provider);
+  const guide = new GuideService(store, setup, backend, provider);
   const bridge = new SessionMcpBridge(store, actors);
   const app = management(store, setup, provider, actors);
   const webRoot = resolve(options.webRoot ?? "dist/web");
@@ -108,6 +110,7 @@ export async function startServer(options: {
     const address = server.address();
     if (!address || typeof address === "string") throw new Error("No TCP listener");
     url = `http://${options.hostname ?? "127.0.0.1"}:${address.port}`;
+    guide.bridgeUrl = `http://127.0.0.1:${address.port}/mcp`;
     actors.recover();
   } catch (error) {
     await close();
@@ -121,6 +124,7 @@ export async function startServer(options: {
     actors,
     provider,
     setup,
+    guide,
     bridge,
     get ready() {
       return (

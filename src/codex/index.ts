@@ -217,6 +217,25 @@ const orgServer = (binding: { bridgeUrl: string; bridgeToken: string }) => ({
   default_tools_approval_mode: "approve",
 });
 
+const sessionStart = (
+  input: { cwd: string; model?: string; bridgeUrl: string; bridgeToken: string },
+  ephemeral: boolean,
+) => ({
+  cwd: input.cwd,
+  ...(input.model ? { model: input.model } : {}),
+  approvalPolicy: "on-request",
+  sandbox: "read-only",
+  ephemeral,
+  historyMode: "legacy",
+  modelProvider: "openai",
+  allowProviderModelFallback: false,
+  serviceName: "orgactor-codex",
+  config: {
+    forced_login_method: "chatgpt",
+    "mcp_servers.org": orgServer(input),
+  },
+});
+
 export class AppServerAdapter implements CodexAdapter {
   private created = new Map<string, { bridgeUrl: string; bridgeToken: string }>();
   constructor(readonly protocol: NativeProtocol) {}
@@ -226,21 +245,7 @@ export class AppServerAdapter implements CodexAdapter {
     bridgeUrl: string;
     bridgeToken: string;
   }): Promise<string> {
-    const result = await this.protocol.request("thread/start", {
-      cwd: input.cwd,
-      ...(input.model ? { model: input.model } : {}),
-      approvalPolicy: "on-request",
-      sandbox: "read-only",
-      ephemeral: false,
-      historyMode: "legacy",
-      modelProvider: "openai",
-      allowProviderModelFallback: false,
-      serviceName: "orgactor-codex",
-      config: {
-        forced_login_method: "chatgpt",
-        "mcp_servers.org": orgServer(input),
-      },
-    });
+    const result = await this.protocol.request("thread/start", sessionStart(input, false));
     if (typeof result.thread?.id !== "string")
       throw new Fault("NATIVE_UNKNOWN", "Codex did not return a session identity.");
     this.created.set(result.thread.id, {
@@ -248,6 +253,14 @@ export class AppServerAdapter implements CodexAdapter {
       bridgeToken: input.bridgeToken,
     });
     return result.thread.id;
+  }
+  /** Start and drop an ephemeral session with an Actor's settings: whether Codex accepts them. */
+  async preflight(input: { cwd: string; bridgeUrl: string; bridgeToken: string }): Promise<void> {
+    const result = await this.protocol.request("thread/start", sessionStart(input, true));
+    if (typeof result.thread?.id === "string")
+      await this.protocol
+        .request("thread/unsubscribe", { threadId: result.thread.id })
+        .catch(() => undefined);
   }
   async resume(
     threadId: string,
