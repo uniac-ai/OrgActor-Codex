@@ -55,6 +55,8 @@ async function fixture(t: any) {
             message: `no rollout found for thread id ${frame.params.threadId}`,
           };
         result = { thread: metadata() };
+      } else if (frame.method === "thread/settings/update") {
+        result = {};
       } else if (frame.method === "thread/read") {
         if (frame.params.includeTurns) {
           error =
@@ -142,21 +144,28 @@ test(`AppServerAdapter reconciles a fresh unnamed session before any user messag
   assert.equal(bootstrap.submissions[0].result?.output, "actual");
 });
 
-test(`a session starts and resumes with full access, never asking, and its Hub Tools pre-approved`, async (t) => {
+test(`a session starts with full access, never asking, a resumed one is set so, and its Hub Tools are pre-approved`, async (t) => {
   const { protocol, state } = await fixture(t);
   const binding = { bridgeUrl: "http://127.0.0.1/mcp", bridgeToken: "BRIDGE_TEST_ONLY" };
   const threadId = await new AppServerAdapter(protocol).create({ cwd: "/owned", ...binding });
   state.materialized = true;
   await new AppServerAdapter(protocol).resume(threadId, binding);
   const call = (method: string) => state.calls.find((c) => c.method === method);
-  for (const method of ["thread/start", "thread/resume"]) {
-    assert.equal(call(method)?.params.approvalPolicy, "never");
-    assert.equal(call(method)?.params.sandbox, "danger-full-access");
+  assert.equal(call("thread/start")?.params.approvalPolicy, "never");
+  assert.equal(call("thread/start")?.params.sandbox, "danger-full-access");
+  // A resume keeps a loaded session's settings, so they are applied to the session after it.
+  const methods = state.calls.map((c) => c.method);
+  assert.equal(methods.indexOf("thread/settings/update"), methods.indexOf("thread/resume") + 1);
+  assert.deepEqual(call("thread/settings/update")?.params, {
+    threadId,
+    approvalPolicy: "never",
+    sandboxPolicy: { type: "dangerFullAccess" },
+  });
+  for (const method of ["thread/start", "thread/resume"])
     assert.equal(
       call(method)?.params.config["mcp_servers.org"].default_tools_approval_mode,
       "approve",
     );
-  }
 });
 
 test("initial reuse requires the creating adapter, unchanged binding, empty identity and no submitted request", async (t) => {
