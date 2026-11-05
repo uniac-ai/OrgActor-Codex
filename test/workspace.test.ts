@@ -1,30 +1,15 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { Work } from "@agentorg/cli/contract";
 import { ActorController } from "../src/actors/controller.js";
-import { nativeForm } from "../src/actors/forms.js";
 import { Fault } from "../src/management/schema.js";
-import { type Bootstrap, hash, RuntimeStore } from "../src/runtime/index.js";
+import { type Bootstrap, RuntimeStore } from "../src/runtime/index.js";
 import { at, attention, form, message } from "./workspace-fixtures.js";
 
-/** The Hub's work_answer. */
-const answering = {
-  name: "work_answer",
-  inputSchema: { type: "object" },
-  _meta: {
-    "agentorg/tool": {
-      id: "hub:work",
-      name: "work",
-      interface: "work_answer",
-      one_way: false,
-      long_running: false,
-    },
-  },
-};
-/** The Actor's most recently updated active Work, which a native prompt is asked on. */
+/** The Actor's most recently updated active Work. */
 const active = Work.parse({
   ticketID: "w-active",
   requesterID: "actor",
@@ -36,9 +21,6 @@ const active = Work.parse({
   revision: 1,
   updatedAt: at,
 });
-const settle = async () => {
-  for (let i = 0; i < 12; i++) await new Promise(setImmediate);
-};
 function fixture(t: any) {
   const root = mkdtempSync(join(tmpdir(), "orgactor-workspace-"));
   const store = new RuntimeStore(root);
@@ -49,7 +31,7 @@ function fixture(t: any) {
     threadId: "thread",
     bridgeToken: "BRIDGE_SENTINEL",
     enabled: true,
-    config: { approvalAuthority: "hub" },
+    config: {},
     submissions: [],
   };
   bootstrap.delivered = "0";
@@ -64,8 +46,6 @@ function fixture(t: any) {
       },
     }),
     answer: (id: string, response: object) => {
-      const saved = JSON.parse(readFileSync(store.file, "utf8"));
-      assert.ok(Object.values(saved.actors.actor.approvals).some((b: any) => b.answerAttempt));
       answers.push({ id, response });
     },
     reject: () => {},
@@ -80,7 +60,7 @@ function fixture(t: any) {
   actor.hub = {
     connection: { connected: true },
     alias: (_: string, name: string) => name,
-    tools: [answering],
+    tools: [],
     close: async () => {},
   } as any;
   const event = (method: string, params: any = {}, id?: string) =>
@@ -173,9 +153,8 @@ test("a missing position starts at the Hub's current one, and one the Hub never 
   assert.equal(f.bootstrap.submissions.length, 0);
 });
 
-test("input steers a running turn, and starts the next turn when the turn waits on a native request or refuses", async (t) => {
+test("input steers a running turn, starts the next turn when the turn refuses, and a native request holds nothing", async (t) => {
   const f = fixture(t);
-  f.bootstrap.config.approvalAuthority = "desktop";
   await f.ready();
   const deliver = (recordID: string) =>
     (f.actor as any).deliver(
@@ -184,8 +163,9 @@ test("input steers a running turn, and starts the next turn when the turn waits 
     );
   await deliver("steered");
   await deliver("refused");
+  // Codex asks nothing under the never policy; a request it still sends is declined at once.
   f.request();
-  await deliver("waiting");
+  assert.deepEqual(f.answers, [{ id: "request", response: { permissions: {}, scope: "turn" } }]);
   await deliver("steered");
   assert.deepEqual(f.adapter.steers, [`assigned:steered:${at}`, `assigned:refused:${at}`]);
   assert.deepEqual(
@@ -194,24 +174,13 @@ test("input steers a running turn, and starts the next turn when the turn waits 
       [`assigned:steered:${at}`, "steer", "running"],
       [`assigned:refused:${at}`, "steer", "done"],
       [`assigned:refused:${at}:next`, "run", "queued"],
-      [`assigned:waiting:${at}`, "run", "queued"],
     ],
   );
 });
 
-test("an answer carries its ask and Work; the answer to a native request's approval ask is not input", async (t) => {
+test("an answer carries its ask, and its Work when it is on one", async (t) => {
   const f = fixture(t);
-  const fields = [{ name: "field_native_0", label: "Decision", required: true }];
-  f.bootstrap.approvals = {
-    native: {
-      requestId: "r",
-      threadId: "thread",
-      turnId: "turn",
-      method: "m",
-      fields,
-      state: "waiting",
-    },
-  };
+  const fields = [{ name: "approach", label: "Approach", required: true }];
   const answered = { answers: { approach: "freeze" }, note: "Go", at };
   (f.actor.hub as any).call = async (name: string, args: any) => {
     assert.equal(name, "work_get");
@@ -247,10 +216,14 @@ test("an answer carries its ask and Work; the answer to a native request's appro
     );
   assert.deepEqual(
     f.bootstrap.submissions.map((s) => s.id),
-    [`answer:other:${at}`],
+    [`answer:own:${at}`, `answer:other:${at}`],
+  );
+  assert.match(
+    f.bootstrap.submissions[0].text,
+    /^manager answered your ask "Freeze\?" \(own\): approach: freeze\. Note: Go\. Apply it\. /,
   );
   assert.equal(
-    f.bootstrap.submissions[0].text,
+    f.bootstrap.submissions[1].text,
     'manager answered your ask "Freeze?" (other): approach: freeze. Note: Go. Apply it, then update "Switch to v2" (w1). The ask records the answer; it is resolved.',
   );
 });
@@ -299,168 +272,6 @@ test("a repeated item keeps its unknown outcome without a new dispatch", async (
   assert.equal(f.bootstrap.delivered, "1");
 });
 
-const answer = (name: string, value = "Approve") => ({
-  status: "resolved" as const,
-  responses: { manager: { answers: { [name]: value }, at } },
-});
-const noTeam = (name: string) => assert.notEqual(name, "team", "approval asks name no answerer");
-
-test("an approval ask binds the exact native scope; one manager answer has one durable uncertain attempt", async (t) => {
-  const f = fixture(t);
-  await f.ready();
-  let created: any,
-    reads = 0;
-  (f.actor.hub as any).call = async (name: string, args: any) => {
-    noTeam(name);
-    if (name === "work_list") {
-      assert.deepEqual(args, { ownerID: "actor", status: ["active"], order: "recent", limit: 1 });
-      return ok({ items: [active], next: null, actors: {} });
-    }
-    if (name === "work_update") {
-      created = form(args.ask, { workID: args.ticketID, ...answer(args.ask.fields[0].name) });
-      return ok(created);
-    }
-    assert.equal(name, "work_get");
-    assert.deepEqual(args, { askID: created.formID });
-    reads++;
-    return ok({ ...active, asks: [created] });
-  };
-  f.request();
-  await settle();
-  assert.equal(created.approval, true);
-  assert.equal(created.workID, "w-active", "asked on the Actor's most recent active Work");
-  assert.equal(created.title, "Grant Codex network access for this turn?");
-  assert.match(created.context, /Requested scope: \{"network":\{"enabled":true\}\}/);
-  assert.match(created.fields[0].name, /field_[a-f0-9]{64}_0/);
-  assert.deepEqual(
-    created.fields[0].options.map((o: any) => o.value),
-    ["Approve", "Decline", "Cancel"],
-  );
-  assert.equal(JSON.stringify(created).includes("session"), false);
-  assert.deepEqual(f.answers, [
-    { id: "request", response: { permissions: { network: { enabled: true } }, scope: "turn" } },
-  ]);
-  assert.equal(reads, 1);
-  const binding = Object.values(f.bootstrap.approvals ?? {})[0];
-  assert.equal(binding.sessionId, "session");
-  assert.equal(binding.answerAttempt?.formRevision, 1);
-  f.event("serverRequest/resolved", { requestId: "request" });
-  assert.equal(binding.state, "resolved");
-  f.request();
-  await settle();
-  assert.equal(f.answers.length, 1);
-});
-
-for (const invalid of [
-  "requester",
-  "approval",
-  "work",
-  "fields",
-  "closed",
-  "terminal",
-  "session",
-  "desktop",
-])
-  test(`an ask's ${invalid} change cannot authorize an unrelated/stale native request`, async (t) => {
-    const f = fixture(t);
-    await f.ready();
-    let created: any;
-    (f.actor.hub as any).call = async (name: string, args: any) => {
-      noTeam(name);
-      if (name === "work_list") return ok({ items: [active], next: null, actors: {} });
-      if (name === "work_update") {
-        created = form(args.ask, { workID: args.ticketID });
-        return ok(created);
-      }
-      assert.equal(name, "work_get");
-      const answered = { ...created, ...answer(created.fields[0].name) };
-      if (invalid === "requester") answered.requesterID = "other";
-      if (invalid === "approval") answered.approval = false;
-      if (invalid === "work") answered.workID = "other-work";
-      if (invalid === "fields")
-        answered.fields = [{ name: "fake", label: "fake", required: false }];
-      if (invalid === "closed") {
-        answered.status = "cancelled";
-        answered.responses = {};
-        answered.resolution = { text: "approve", at };
-      }
-      if (invalid === "terminal")
-        f.event("turn/completed", { turn: { id: "turn", status: "completed", items: [] } });
-      if (invalid === "session") (f.actor as any).sessionId = "replacement";
-      if (invalid === "desktop") f.bootstrap.config.approvalAuthority = "desktop";
-      return ok({ ...active, asks: [answered] });
-    };
-    f.request();
-    await settle();
-    assert.equal(f.answers.length, 0);
-  });
-
-test("lost ask issuance recovers one exact requester's ask, never reissues or resends an uncertain answer after restart", async (t) => {
-  const f = fixture(t);
-  await f.ready();
-  let created: any,
-    creates = 0,
-    reads = false;
-  const call = async (name: string, args: any): Promise<any> => {
-    noTeam(name);
-    if (name === "work_list") return ok({ items: [active], next: null, actors: {} });
-    if (name === "work_update") {
-      creates++;
-      created = form(args.ask, { workID: args.ticketID, ...answer(args.ask.fields[0].name) });
-      throw new Error("lost creation reply");
-    }
-    assert.equal(name, "work_get");
-    if (args.askID !== undefined) return ok({ ...active, asks: [created] });
-    // Issuance is recovered through the bound Work's asks.
-    assert.deepEqual(args, { ticketID: "w-active" });
-    if (!reads) throw new Error("held read unavailable");
-    const other = form(
-      { title: "Other", fields: [{ name: "x", label: "x", required: false }] },
-      { formID: "x", workID: "w-active" },
-    );
-    return ok({ ...active, asks: [other, created] });
-  };
-  (f.actor.hub as any).call = call;
-  f.request();
-  await settle();
-  const reopen = () => {
-    const store = new RuntimeStore(f.root);
-    const actor = new ActorController(store.data.actors.actor, store, async () => f.adapter as any);
-    actor.hub = { ...f.actor.hub, call } as any;
-    actor.adapter = {
-      ...f.adapter,
-      answer: (id: string, response: object) => {
-        f.answers.push({ id, response });
-        throw new Error("socket outcome unknown");
-      },
-    } as any;
-    t.after(() => actor.close());
-    return { store, actor };
-  };
-  reads = true;
-  const second = reopen();
-  await second.actor.reconcile();
-  (second.actor as any).observe({
-    method: "item/permissions/requestApproval",
-    id: "request",
-    params: { threadId: "thread", turnId: "turn", permissions: { network: { enabled: true } } },
-  });
-  await settle();
-  assert.equal(creates, 1);
-  assert.equal(f.answers.length, 1);
-  const third = reopen();
-  await third.actor.reconcile();
-  (third.actor as any).observe({
-    method: "item/permissions/requestApproval",
-    id: "request",
-    params: { threadId: "thread", turnId: "turn", permissions: { network: { enabled: true } } },
-  });
-  await settle();
-  assert.equal(creates, 1);
-  assert.equal(f.answers.length, 1);
-  assert.ok(Object.values(third.store.data.actors.actor.approvals ?? {})[0].answerAttempt);
-});
-
 test("old private rows remain readable and exact", async (t) => {
   const f = fixture(t);
   const old: any = structuredClone(f.store.data);
@@ -502,57 +313,10 @@ test("old private rows remain readable and exact", async (t) => {
   assert.equal(reopened.data.actors.actor.submissions.length, 1);
 });
 
-for (const matches of [0, 2])
-  test(`uncertain ask creation with ${matches} matches never duplicates issuance or grants native input`, async (t) => {
-    const f = fixture(t);
-    await f.ready();
-    let created: any,
-      creates = 0;
-    (f.actor.hub as any).call = async (name: string, args: any) => {
-      noTeam(name);
-      if (name === "work_list") return ok({ items: [active], next: null, actors: {} });
-      if (name === "work_update") {
-        creates++;
-        created = form(args.ask, { workID: args.ticketID });
-        throw new Error("unknown create outcome");
-      }
-      assert.equal(name, "work_get");
-      assert.deepEqual(args, { ticketID: "w-active" });
-      return ok({
-        ...active,
-        asks: Array.from({ length: matches }, (_, n) => ({ ...created, formID: `form-${n}` })),
-      });
-    };
-    f.request();
-    await settle();
-    f.request();
-    await settle();
-    assert.equal(creates, 1);
-    assert.equal(f.answers.length, 0);
-    assert.match(f.actor.lastError ?? "", matches ? /Multiple asks/ : /issuance is uncertain/);
-  });
-
 test("each item is framed with what to do, naming work_answer for asks and submissions", async (t) => {
   const f = fixture(t);
-  const fields = [{ name: "field_native_0", label: "Decision", required: true }];
-  f.bootstrap.approvals = {
-    native: {
-      requestId: "r",
-      threadId: "thread",
-      turnId: "turn",
-      method: "m",
-      fields,
-      state: "waiting",
-    },
-  };
   (f.actor.hub as any).call = async (name: string, args: any) => {
     assert.equal(name, "work_get");
-    // The executor's own approval ask, on the Actor's Work, answered.
-    if (args.askID === "own")
-      return ok({
-        ...active,
-        asks: [form({ title: "Grant?", fields }, { formID: "own", workID: "w-active" })],
-      });
     // Work the Actor requested of another, and Work another gave it.
     if (args.ticketID === "w2")
       return ok({
@@ -580,7 +344,6 @@ test("each item is framed with what to do, naming work_answer for asks and submi
     { kind: "ask", recordID: "a1", from: "report", title: "Delete the bucket?" },
     { kind: "review_due", recordID: "w2", from: "report", title: "Prove the backups" },
     { kind: "review_due", recordID: "w6", title: "Restore drill" },
-    { kind: "answer", recordID: "own", title: "Grant?" },
     { kind: "updated", recordID: "w-active", title: "Build" },
     { kind: "updated", recordID: "w3", title: "Old plan" },
     { kind: "assigned", recordID: "w4", title: "Index it" },
@@ -598,79 +361,5 @@ test("each item is framed with what to do, naming work_answer for asks and submi
       'manager gave you Work "Index it" (w4). Read it with work_get; set it active with work_update when you start.',
       'manager answered your submission of "Migrate" (w5). Read the answer with work_get; on requested changes, address them and submit again.',
     ],
-    "a native request's approval ask, answered, is the request's, not input",
   );
-});
-
-test("a binding from before asks on Work with an uncertain issuance stays pending without reading Work", async (t) => {
-  const f = fixture(t);
-  await f.ready();
-  let creates = 0,
-    recoveries = 0;
-  (f.actor.hub as any).call = async (name: string, _args: any) => {
-    noTeam(name);
-    if (name === "work_list") return ok({ items: [active], next: null, actors: {} });
-    if (name === "work_update") {
-      creates++;
-      throw new Error("unknown create outcome");
-    }
-    assert.equal(name, "work_get");
-    recoveries++;
-    return ok({ ...active, asks: [] });
-  };
-  f.request();
-  await settle();
-  assert.equal(recoveries, 1);
-  const binding = Object.values(f.bootstrap.approvals ?? {})[0];
-  assert.equal(binding.formId, null);
-  delete binding.ticketId;
-  f.store.save();
-  f.request();
-  await settle();
-  assert.equal(creates, 1);
-  assert.equal(recoveries, 1, "no Work names the old binding's ask");
-  assert.equal(f.answers.length, 0);
-  assert.match(f.actor.lastError ?? "", /issuance is uncertain/);
-});
-
-test("an ask issued before asks on Work keeps its binding and is answered through its bare Form", async (t) => {
-  const f = fixture(t);
-  await f.ready();
-  // The binding exactly as an earlier executor kept it: an ask ID, and no Work.
-  const method = "item/permissions/requestApproval";
-  const params = {
-    threadId: "thread",
-    turnId: "turn",
-    permissions: { network: { enabled: true } },
-  };
-  const key = hash(JSON.stringify(["thread", "session", "turn", "request"]));
-  const projection = nativeForm(method, params, hash(JSON.stringify([key, method, params])));
-  f.bootstrap.approvals = {
-    [key]: {
-      requestId: "request",
-      threadId: "thread",
-      turnId: "turn",
-      method,
-      sessionId: "session",
-      inputIds: [],
-      fields: projection.ask.fields,
-      formId: "legacy",
-      state: "waiting",
-    },
-  };
-  const legacy = form(projection.ask, {
-    formID: "legacy",
-    ...answer(projection.ask.fields[0].name),
-  });
-  (f.actor.hub as any).call = async (name: string, args: any) => {
-    assert.equal(name, "work_get", "no Work is chosen for an ask already issued");
-    assert.deepEqual(args, { askID: "legacy" });
-    return ok(legacy);
-  };
-  f.request();
-  await settle();
-  assert.deepEqual(f.answers, [
-    { id: "request", response: { permissions: { network: { enabled: true } }, scope: "turn" } },
-  ]);
-  assert.equal(f.bootstrap.threadWork, undefined);
 });

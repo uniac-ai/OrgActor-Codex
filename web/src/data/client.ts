@@ -10,7 +10,7 @@ export class ManagementClient {
     const r = await fetch(`/api${path}`, {
       method,
       headers: {
-        ...(body === undefined ? {} : { "Content-Type": "application/json" }),
+        ...(method === "GET" ? {} : { "Content-Type": "application/json" }),
       },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     });
@@ -55,10 +55,10 @@ export class ManagementClient {
     return this.request("/actors", "POST", {
       actorId,
       ...(credential ? { credential } : {}),
-      config: { ...(model ? { model } : {}), approvalAuthority: "desktop" },
+      config: { ...(model ? { model } : {}) },
     });
   }
-  actor(id: string, value: { enabled?: boolean; approvalAuthority?: "desktop" | "hub" }) {
+  actor(id: string, value: { enabled: boolean }) {
     return this.request(`/actors/${encodeURIComponent(id)}`, "PATCH", value);
   }
   input(id: string, text: string, turnId?: string) {

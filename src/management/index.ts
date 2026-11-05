@@ -7,7 +7,6 @@ import type { GuideService } from "../setup/guide.js";
 import type { SetupService } from "../setup/index.js";
 import {
   Attach,
-  Authority,
   Fault,
   FolderChoice,
   Input,
@@ -36,6 +35,16 @@ export function management(
         "Open the console at 127.0.0.1, localhost or [::1].",
         403,
       );
+    // A page on another site can send a form-like request without asking first. Requiring JSON
+    // makes the browser ask, which this API never grants, and a foreign Origin is refused outright.
+    const origin = c.req.header("origin");
+    if (origin !== undefined && origin !== new URL(c.req.url).origin)
+      throw new Fault("ORIGIN_NOT_ALLOWED", "Use the console from its own address.", 403);
+    if (
+      !["GET", "HEAD"].includes(c.req.method) &&
+      c.req.header("content-type")?.split(";")[0].trim().toLowerCase() !== "application/json"
+    )
+      throw new Fault("JSON_REQUIRED", "Send the request as application/json.", 415);
     c.header("Cache-Control", "no-store");
     c.header("X-Content-Type-Options", "nosniff");
     await next();
@@ -75,8 +84,6 @@ export function management(
             threadId: b.threadId,
             turnId: null,
             queued: b.submissions.filter((s) => s.state === "queued").length,
-            approvalAuthority: b.config.approvalAuthority,
-            requests: [],
             output: "",
           },
       ),
@@ -123,23 +130,10 @@ export function management(
     return c.json({ actorId: attached.actorId }, 201);
   });
   app.patch("/api/actors/:id", async (c) => {
-    const data = z
-      .strictObject({ enabled: z.boolean().optional(), approvalAuthority: Authority.optional() })
-      .parse(await c.req.json());
+    const data = z.strictObject({ enabled: z.boolean().optional() }).parse(await c.req.json());
     const id = c.req.param("id");
     if (!Object.hasOwn(store.data.actors, id))
       throw new Fault("ACTOR_NOT_FOUND", "This Actor is not attached.", 404);
-    if (data.approvalAuthority) {
-      const running = actors.actors.get(id);
-      if (running?.snapshot().requests.length)
-        throw new Fault(
-          "REQUEST_PENDING",
-          "Resolve pending requests before changing their answer owner.",
-        );
-      store.data.actors[id].config.approvalAuthority = data.approvalAuthority;
-      store.save();
-      actors.recover();
-    }
     if (data.enabled !== undefined) await actors.setEnabled(id, data.enabled);
     return c.json({ updated: true });
   });
@@ -177,10 +171,6 @@ export function management(
         (await actor.adapter?.terminate(actor.bootstrap.threadId, c.req.param("processId"))) ??
         false,
     });
-  });
-  app.post("/api/actors/:id/requests/:requestId/respond", async (c) => {
-    await actors.get(c.req.param("id")).checkRequest(c.req.param("requestId"));
-    return c.json({ checked: true });
   });
   return app;
 }

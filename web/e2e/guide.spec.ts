@@ -95,14 +95,14 @@ const shot = async (page: Page, name: string) => {
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   await page.screenshot({ path: resolve(`evidence/console/${name}.png`), fullPage: true });
 };
-const attach = (actorId: string, threadId: string, approvalAuthority: "desktop" | "hub") => {
+const attach = (actorId: string, threadId: string) => {
   module.store.data.actors[actorId] = {
     actorId,
     hubUrl: "http://127.0.0.1:8740",
     threadId,
     bridgeToken: "private",
     enabled: !!threadId,
-    config: { approvalAuthority },
+    config: {},
     submissions: [],
   };
   module.store.data.journal[`http://127.0.0.1:8740|codex|${actorId}`] = threadId
@@ -169,7 +169,7 @@ test("the guided setup walks a fresh Mac to Ready through Codex on this Mac", as
   await expect(step(page, "actor").getByLabel("Actor ID")).toBeVisible();
 
   // The Actor is attached (its Hub isn't part of this test).
-  attach("act", "session-thread", "desktop");
+  attach("act", "session-thread");
   await expect(page.getByText("Ready: the Actor works through Codex on this Mac.")).toBeVisible({
     timeout: 10_000,
   });
@@ -195,23 +195,21 @@ test("the Actors Status gives each Actor its own reason", async ({ page }) => {
   const api = (method: string, path: string, body?: unknown) =>
     fetch(`${module.url}/api${path}`, {
       method,
-      ...(body
-        ? { headers: { "content-type": "application/json" }, body: JSON.stringify(body) }
-        : {}),
+      headers: { "content-type": "application/json" },
+      ...(body ? { body: JSON.stringify(body) } : {}),
     }).then((r) => r.json());
   await api("PUT", "/setup/guide/codex");
   const folder = join(home, "agentorg-codex");
   await api("PUT", "/setup/guide/folder", { path: folder });
   await api("POST", "/setup/guide/folder");
-  attach("failed", "", "desktop");
-  attach("answered-by-hub", "hub-thread", "hub");
-  attach("answered-in-desktop", "desktop-thread", "desktop");
+  attach("failed", "");
+  attach("working", "working-thread");
   await page.getByRole("button", { name: "Actors", exact: true }).click();
   const row = (id: string) => page.getByRole("row").filter({ hasText: id });
   await expect(row("failed")).toContainText("Session creation failed: detach and attach again", {
     timeout: 10_000,
   });
-  await expect(row("answered-by-hub")).toContainText("Connecting");
+  await expect(row("working")).toContainText("Connecting");
   await shot(page, "guide-actors-own-reasons");
   await row("failed")
     .getByRole("button", { name: /Session creation failed/ })

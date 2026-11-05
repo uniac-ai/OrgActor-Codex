@@ -99,12 +99,11 @@ test("operator controls use actor-scoped API routes and separate interrupt from 
   const calls: string[] = [];
   let queued = 0;
   let active: string | null = "turn";
-  let pendingForm = false;
   let terminals = [{ processId: "native-terminal", command: "sleep 20", cwd: "/owned" }];
   const bootstrap = {
     actorId: "act_browser_fixture",
     hubUrl: "http://hub",
-    config: { approvalAuthority: "desktop" as const },
+    config: {},
     threadId: "browser-fixture-session",
     bridgeToken: "PRIVATE_FIXTURE_CAPABILITY",
     enabled: true,
@@ -123,17 +122,6 @@ test("operator controls use actor-scoped API routes and separate interrupt from 
       observedAt: new Date().toISOString(),
       turnId: active,
       queued,
-      approvalAuthority: pendingForm ? "hub" : "desktop",
-      requests: pendingForm
-        ? [
-            {
-              id: "fixture-request",
-              method: "item/tool/requestUserInput",
-              turnId: "turn",
-              summary: "Codex requests input",
-            },
-          ]
-        : [],
       output: "Browser test fixture output.",
     }),
     enqueue: () => {
@@ -183,16 +171,17 @@ test("operator controls use actor-scoped API routes and separate interrupt from 
     page.getByText("No running background terminals were reported for this session."),
   ).toBeVisible();
   expect(calls).toEqual(["input", "steer", "interrupt", "terminate:native-terminal"]);
-  pendingForm = true;
   await page.reload();
   await page.getByRole("button", { name: "Toggle Sidebar" }).click();
   await page.getByRole("button", { name: "Actors", exact: true }).click();
   await page.keyboard.press("Escape");
   await page.getByRole("button", { name: bootstrap.actorId, exact: true }).click();
   await expect(
-    page.getByText(/its AgentOrg approval ask, as the Actor it routes to, when one is bound/),
+    page.getByText(
+      "Runs with full access to this Mac, network included, and never asks for approval.",
+    ),
   ).toBeVisible();
-  await screenshot(page, "mobile-native-form-fixture");
+  await screenshot(page, "mobile-actor-access-fixture");
   await page.getByRole("button", { name: "Detach Actor" }).click();
   await expect(page.getByRole("dialog")).toContainText(
     "Its Hub identity and its Codex session stay",

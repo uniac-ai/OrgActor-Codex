@@ -93,7 +93,6 @@ export interface ActorsFeature {
   onSteer(): void;
   onInterrupt(): void;
   onToggleConnection(id: string): void;
-  onAuthority(id: string, value: "desktop" | "hub"): void;
   onTerminals(): void;
   terminals: { processId: string; command: string; cwd: string }[] | null;
   onCloseTerminals(): void;

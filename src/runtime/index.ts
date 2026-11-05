@@ -9,7 +9,6 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
-import type { Form } from "@agentorg/cli/contract";
 import type { ExecutionConfig, Probe, ProbeStage, Settings } from "../management/schema.js";
 
 export const hash = (value: string) => createHash("sha256").update(value).digest("hex");
@@ -38,25 +37,6 @@ export interface Submission {
     output: string;
   };
 }
-export interface ApprovalBinding {
-  requestId: string;
-  threadId: string;
-  turnId: string | null;
-  method: string;
-  sessionId?: string;
-  /** The Work the ask is on; a binding from before asks on Work has none. */
-  ticketId?: string;
-  /** Null records an uncertain creation attempt; a missing field permits first issuance. */
-  formId?: string | null;
-  fields?: Form["fields"];
-  /** A selected response is durable before its single, unacknowledged native delivery attempt. */
-  answerAttempt?: { formRevision: number; response: object };
-  inputIds?: string[];
-  questionId?: string;
-  questionText?: string;
-  questionCursor?: number;
-  state: "asking" | "waiting" | "resolved";
-}
 export interface Bootstrap {
   actorId: string;
   hubUrl: string;
@@ -68,10 +48,7 @@ export interface Bootstrap {
   submissions: Submission[];
   /** The Hub `attention` position this executor has delivered through; the Hub keeps none. */
   delivered?: string;
-  /** The Work this executor opened for its thread's native prompts; null while its creation is uncertain. */
-  threadWork?: { threadId: string; ticketId: string | null };
   suspended?: number | "admission-rejected";
-  approvals?: Record<string, ApprovalBinding>;
   startupFailure?: {
     phase: "hub" | "backend" | "native" | "history";
     code: string;

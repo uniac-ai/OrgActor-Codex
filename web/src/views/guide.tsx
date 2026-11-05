@@ -132,10 +132,6 @@ export function actorStatus(
       step: blocker.id,
     };
   if (!actor.enabled) return { text: "Paused" };
-  if (actor.requests.length)
-    return {
-      text: `Request pending: answer in ${actor.approvalAuthority === "desktop" ? "Codex Desktop" : "AgentOrg"}`,
-    };
   if (actor.connectionState === "connected") return { text: "Ready", ready: true };
   return { text: "Connecting" };
 }

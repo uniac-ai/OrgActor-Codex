@@ -184,7 +184,7 @@ test("the guide walks only what the Provider needs to run, in order", async (t) 
     threadId: "thread",
     bridgeToken: "private",
     enabled: true,
-    config: { approvalAuthority: "desktop" },
+    config: {},
     submissions: [],
   };
   assert.equal((await at("tools")).code, "ACTOR_TOOLS_READY");
@@ -362,7 +362,7 @@ test("Detach Actor forgets the Actor here and keeps its Hub identity, so setup c
     threadId,
     bridgeToken: "private",
     enabled: true,
-    config: { approvalAuthority: "desktop" as const },
+    config: {},
     submissions: [],
   });
   store.data.providerEnabled = false;

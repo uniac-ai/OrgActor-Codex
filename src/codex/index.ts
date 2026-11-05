@@ -201,10 +201,12 @@ export class NativeProtocol extends EventEmitter {
 }
 
 /**
- * The session's own `org` MCP server: this Actor's bridge. Its Tools are pre-approved, since the
- * Hub already decides what the Actor may do with them; Codex would otherwise ask the native input
- * owner before every Hub write.
+ * What an Actor's session may do on this Mac, without asking: full access, network included. Codex
+ * never prompts, so no turn waits on a person; permission gating comes back through the Hub.
  */
+const ACCESS = { approvalPolicy: "never", sandbox: "danger-full-access" } as const;
+
+/** The session's own `org` MCP server: this Actor's bridge. Its Tools are pre-approved. */
 const orgServer = (binding: { bridgeUrl: string; bridgeToken: string }) => ({
   url: binding.bridgeUrl,
   http_headers: { Authorization: `Bearer ${binding.bridgeToken}` },
@@ -220,8 +222,7 @@ const sessionStart = (
 ) => ({
   cwd: input.cwd,
   ...(input.model ? { model: input.model } : {}),
-  approvalPolicy: "on-request",
-  sandbox: "read-only",
+  ...ACCESS,
   ephemeral,
   historyMode: "legacy",
   modelProvider: "openai",
@@ -335,6 +336,7 @@ export class AppServerAdapter implements CodexAdapter {
       threadId,
       excludeTurns: true,
       modelProvider: "openai",
+      ...ACCESS,
       ...(binding
         ? {
             config: {

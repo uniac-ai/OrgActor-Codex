@@ -20,13 +20,6 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
-import {
   Sidebar,
   SidebarContent,
   SidebarGroup,
@@ -232,7 +225,8 @@ function ActorsView(p: ActorsFeature) {
         <CardHeader>
           <CardTitle>Attach Actor</CardTitle>
           <CardDescription>
-            Use the identity and bootstrap credential issued by your Hub.
+            Use the identity and bootstrap credential issued by your Hub. Attached Actors run with
+            full access to this Mac.
           </CardDescription>
         </CardHeader>
         <CardContent className="stack">
@@ -271,7 +265,6 @@ function ActorsView(p: ActorsFeature) {
                       <TableHead>Actor</TableHead>
                       <TableHead>Status</TableHead>
                       <TableHead>Queue</TableHead>
-                      <TableHead>Requests</TableHead>
                       <TableHead>
                         <span className="sr-only">Controls</span>
                       </TableHead>
@@ -289,11 +282,6 @@ function ActorsView(p: ActorsFeature) {
                           <ActorStatus status={actorStatus(a, p.guide)} onStep={p.onSetupStep} />
                         </TableCell>
                         <TableCell>{a.queued}</TableCell>
-                        <TableCell>
-                          {a.requests.length
-                            ? `${a.requests.length} to answer in ${a.approvalAuthority === "desktop" ? "Codex Desktop" : "AgentOrg"}`
-                            : null}
-                        </TableCell>
                         <TableCell>
                           <Button
                             variant="ghost"
@@ -339,31 +327,12 @@ function ActorsView(p: ActorsFeature) {
                   ) : null}
                 </div>
               ) : null}
-              <Field label="Approval owner">
-                <Select
-                  value={actor.approvalAuthority}
-                  disabled={p.busy || !!actor.requests.length}
-                  onValueChange={(value) =>
-                    p.onAuthority(actor.actorId, value as "desktop" | "hub")
-                  }
-                >
-                  <SelectTrigger aria-label="Approval owner">
-                    <SelectValue>
-                      {actor.approvalAuthority === "desktop"
-                        ? "Codex Desktop"
-                        : "AgentOrg approval ask"}
-                    </SelectValue>
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="desktop">Codex Desktop</SelectItem>
-                    <SelectItem value="hub">AgentOrg approval ask</SelectItem>
-                  </SelectContent>
-                </Select>
-              </Field>
+              <p className="muted text-sm">
+                Runs with full access to this Mac, network included, and never asks for approval.
+              </p>
               {actor.observation === "unavailable" ? (
                 <div role="status" className="notice">
-                  Native state is unavailable. Resume the connection to refresh the current turn and
-                  requests.
+                  Native state is unavailable. Resume the connection to refresh the current turn.
                 </div>
               ) : null}
               {actor.lastError ? (
@@ -371,18 +340,6 @@ function ActorsView(p: ActorsFeature) {
                   {actor.lastError}
                 </div>
               ) : null}
-              {actor.requests.map((r) => (
-                <div key={r.id} className="notice">
-                  <strong>{r.summary}</strong>
-                  <p>
-                    Answer in{" "}
-                    {actor.approvalAuthority === "desktop"
-                      ? "Codex Desktop"
-                      : "its AgentOrg approval ask, as the Actor it routes to, when one is bound; otherwise follow the native input recovery notice"}
-                    .
-                  </p>
-                </div>
-              ))}
               <Field label="Task input">
                 <Textarea
                   aria-label="Task input"

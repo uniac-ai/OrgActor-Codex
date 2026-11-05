@@ -113,7 +113,7 @@ test("server composition supplies the Setup-owned guard to the actual Supervisor
     threadId: "thread",
     bridgeToken: "private",
     enabled: true,
-    config: { approvalAuthority: "desktop" },
+    config: {},
     submissions: [],
   };
   server.actors.launch("actor");
