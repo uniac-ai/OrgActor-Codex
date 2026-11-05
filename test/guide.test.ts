@@ -289,10 +289,21 @@ test("the guide walks the steps in order, each waiting on the one before", async
   await guide.chooseFolder(dedicated);
   assert.equal((await at("folder")).code, "FOLDER_MISSING");
   guide.createFolder();
+  // Before Desktop's records can be read, the step can't tell, rather than calling it missing.
+  assert.deepEqual(await at("folder"), {
+    id: "folder",
+    state: "broken",
+    code: "DESKTOP_PROJECTS_UNKNOWN",
+    details: { path: dedicated, alias: "this-mac", state: mac.desktopState },
+  });
+  writeFileSync(mac.desktopState, JSON.stringify({ "remote-projects": [] }));
   assert.equal((await at("folder")).code, "FOLDER_NOT_IN_DESKTOP");
   // A local project in Desktop doesn't count: the Actor's session runs on this-mac's Codex.
   const desktop = (state: object) => writeFileSync(mac.desktopState, JSON.stringify(state));
-  desktop({ "local-projects": { p: { name: "Codex Actor", rootPaths: [dedicated] } } });
+  desktop({
+    "remote-projects": [],
+    "local-projects": { p: { name: "Codex Actor", rootPaths: [dedicated] } },
+  });
   assert.deepEqual(await at("folder"), {
     id: "folder",
     state: "missing",
@@ -639,7 +650,7 @@ test("only a project on this-mac's own connection counts as open in Desktop", (t
   const dir = temp(t, "desktop");
   const state = join(dir, "state.json");
   const root = "/Users/person/agentorg-codex";
-  assert.deepEqual(desktopProject(join(dir, "absent.json"), root), {});
+  assert.deepEqual(desktopProject(join(dir, "absent.json"), root), { known: false });
   writeFileSync(
     state,
     JSON.stringify({
@@ -654,7 +665,7 @@ test("only a project on this-mac's own connection counts as open in Desktop", (t
       "local-projects": { a: { name: "Local", rootPaths: ["/x", root] } },
     }),
   );
-  assert.deepEqual(desktopProject(state, root), { local: "Local" });
+  assert.deepEqual(desktopProject(state, root), { known: true, local: "Local" });
   writeFileSync(
     state,
     JSON.stringify({
@@ -663,7 +674,18 @@ test("only a project on this-mac's own connection counts as open in Desktop", (t
       ],
     }),
   );
-  assert.deepEqual(desktopProject(state, root), { remote: "Trial" });
-  writeFileSync(state, "{ not json");
-  assert.deepEqual(desktopProject(state, root), {});
+  assert.deepEqual(desktopProject(state, root), { known: true, remote: "Trial" });
+  // Desktop's records are private: missing, unreadable or another form means nothing is known.
+  for (const unknown of [
+    "{ not json",
+    "{}",
+    JSON.stringify({ "remote-projects": { a: { hostId: "x", remotePath: root } } }),
+    JSON.stringify({ "remote-projects": [{ host: "remote-ssh-discovered:this-mac", path: root }] }),
+    JSON.stringify({ "remote-projects": [], "local-projects": [root] }),
+  ]) {
+    writeFileSync(state, unknown);
+    assert.deepEqual(desktopProject(state, root), { known: false }, unknown);
+  }
+  writeFileSync(state, JSON.stringify({ "remote-projects": [] }));
+  assert.deepEqual(desktopProject(state, root), { known: true });
 });

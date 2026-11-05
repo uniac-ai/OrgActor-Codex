@@ -150,13 +150,20 @@ test("the guided setup walks a fresh Mac to Ready, writing only what the person 
   await expect(step(page, "folder")).toContainText("doesn't exist yet");
   await step(page, "folder").getByRole("button", { name: "Create folder" }).click();
   await page.getByRole("dialog").getByRole("button", { name: "Create folder" }).click();
+  // Desktop's records aren't there yet: the step can't tell, rather than calling it missing.
+  await expect(step(page, "folder")).toContainText("This console can't tell whether Desktop has");
+  openInDesktop({ "remote-projects": [] });
+  await step(page, "folder").getByRole("button", { name: "Re-check" }).click();
   await expect(step(page, "folder")).toContainText("Desktop has no project for");
   await expect(step(page, "folder")).toContainText(
     "Under SSH connections from this Mac, choose Add a remote project on this-mac.",
   );
   expect(existsSync(suggested)).toBe(true);
   // A local project with the folder is named as such; a project on this-mac completes the step.
-  openInDesktop({ "local-projects": { p: { name: "Codex Actor", rootPaths: [suggested] } } });
+  openInDesktop({
+    "remote-projects": [],
+    "local-projects": { p: { name: "Codex Actor", rootPaths: [suggested] } },
+  });
   await step(page, "folder").getByRole("button", { name: "Re-check" }).click();
   await expect(step(page, "folder")).toContainText("as the local project Codex Actor");
   await shot(page, "guide-folder-local-project");
