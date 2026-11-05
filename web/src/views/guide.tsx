@@ -95,11 +95,13 @@ function fact(step: GuideStep): string {
     case "FOLDER_HAS_ADAPTER":
       return "Its .codex/config.toml connects AgentOrg's Codex adapter as mcp_servers.org, the name this Actor's tools use.";
     case "FOLDER_NOT_IN_DESKTOP":
-      return `Desktop doesn't have ${d.path} open on this-mac.`;
+      return `Desktop has no project for ${d.path} on this-mac.`;
+    case "FOLDER_LOCAL_PROJECT":
+      return `Desktop has ${d.path} as the local project ${d.project}, not as a project on this-mac, where the Actor's session runs.`;
     case "PREFLIGHT_REFUSED":
       return `Codex refused a test session in ${d.path} with the Actor's settings.`;
     case "FOLDER_READY":
-      return `${d.path} is open in Desktop on this-mac, and a session starts there.`;
+      return `${d.path} is open in Desktop on this-mac${d.project ? ` as ${d.project}` : ""}, and a session starts there.`;
     case "ACTOR_PROVISIONING_FAILED":
       return `${d.actorId}'s session couldn't be created here.`;
     case "ACTOR_CREATING":
@@ -313,7 +315,10 @@ function StepBody(p: GuideFeature & { step: GuideStep }) {
       body = (
         <>
           <Person
-            items={["Open Codex Desktop → Settings → Connections → SSH.", "Connect to this-mac."]}
+            items={[
+              "In Codex Desktop, open Settings → Connections.",
+              "Under SSH connections from this Mac, turn on this-mac.",
+            ]}
           />
           <Actions>{recheck}</Actions>
         </>
@@ -339,10 +344,15 @@ function StepBody(p: GuideFeature & { step: GuideStep }) {
       );
       break;
     case "FOLDER_NOT_IN_DESKTOP":
+    case "FOLDER_LOCAL_PROJECT":
       body = (
         <>
           <Person
-            items={["In Codex Desktop, under this-mac, choose Add folder.", `Add ${d.path}.`]}
+            items={[
+              "In Codex Desktop, open Settings → Connections.",
+              "Under SSH connections from this Mac, choose Add a remote project on this-mac.",
+              `Enter ${d.path}, then choose Use folder.`,
+            ]}
           />
           <Actions>{recheck}</Actions>
         </>
@@ -387,9 +397,12 @@ function StepBody(p: GuideFeature & { step: GuideStep }) {
         <>
           <Person
             items={[
-              `In Codex Desktop, open this-mac → ${String(d.path ?? "")
-                .split("/")
-                .pop()}.`,
+              `In Codex Desktop, open the project ${
+                d.project ??
+                String(d.path ?? "")
+                  .split("/")
+                  .pop()
+              } on this-mac.`,
               `Open ${d.actorId}'s session, ${d.threadId}.`,
             ]}
           />
