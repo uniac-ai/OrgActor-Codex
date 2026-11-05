@@ -15,7 +15,7 @@ import { connect } from "node:net";
 import { homedir, userInfo } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import { cleanEnvironment } from "../codex/index.js";
-import { Fault } from "../management/schema.js";
+import { type AccessPlan, type AccessWrite, Fault } from "../management/schema.js";
 import { type AccessRecord, hash, type RuntimeStore, token } from "../runtime/index.js";
 
 /** The SSH host alias Codex Desktop connects to; the guided setup writes it to `~/.ssh/config`. */
@@ -130,21 +130,6 @@ export function ed25519(comment: string): Key {
     public: `ssh-ed25519 ${blob.toString("base64")}`,
     fingerprint: `SHA256:${createHash("sha256").update(blob).digest("base64").replace(/=+$/, "")}`,
   };
-}
-
-/** One item of the review shown before anything is written. */
-export type AccessWrite =
-  | { action: "directory"; path: string; mode: "0700" }
-  | { action: "key"; path: string; mode: "0600"; fingerprint: string }
-  | { action: "file"; path: string; mode: "0600" | "0700"; lines: string[] }
-  | { action: "backup"; path: string; from: string }
-  /** Added at the end, or before the line `before` names (the file's first Host or Match). */
-  | { action: "append"; path: string; lines: string[]; creates: boolean; before?: string }
-  | { action: "backend"; host: string; port: number; user: string; fingerprint: string };
-
-export interface AccessPlan {
-  id: string;
-  writes: AccessWrite[];
 }
 
 /** What is in place now; the guide turns it into the SSH access step. */

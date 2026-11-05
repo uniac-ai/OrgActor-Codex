@@ -10,6 +10,7 @@ import { management } from "../management/index.js";
 import { Fault, HubConfig } from "../management/schema.js";
 import { CodexProvider } from "../provider/index.js";
 import { RuntimeStore } from "../runtime/index.js";
+import type { ThisMac } from "../setup/access.js";
 import { GuideService } from "../setup/guide.js";
 import { SetupService } from "../setup/index.js";
 
@@ -19,6 +20,8 @@ export async function startServer(options: {
   hostname?: string;
   webRoot?: string;
   hub?: HubConfig;
+  /** The Mac the guided setup reads and writes; this machine by default. */
+  mac?: ThisMac;
 }) {
   const store = new RuntimeStore(options.root);
   if (options.hub) {
@@ -45,9 +48,9 @@ export async function startServer(options: {
     (id) => actors.setEnabled(id, false),
   );
   const setup: SetupService = new SetupService(store, backend, provider);
-  const guide = new GuideService(store, setup, backend, provider);
+  const guide = new GuideService(store, setup, backend, provider, options.mac);
   const bridge = new SessionMcpBridge(store, actors);
-  const app = management(store, setup, provider, actors);
+  const app = management(store, setup, provider, actors, guide);
   const webRoot = resolve(options.webRoot ?? "dist/web");
   app.get("/*", async (c) => {
     const pathname = new URL(c.req.url).pathname;

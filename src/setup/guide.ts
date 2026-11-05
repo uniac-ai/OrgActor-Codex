@@ -2,44 +2,20 @@ import { existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
 import { isAbsolute, join, normalize } from "node:path";
 import { waitsForDesktop } from "../actors/supervisor.js";
 import type { AppServerAdapter, CodexBackend } from "../codex/index.js";
-import { type ConnectorSettings, Fault } from "../management/schema.js";
-import type { CodexProvider } from "../provider/index.js";
-import { type RuntimeStore, token } from "../runtime/index.js";
 import {
   type AccessPlan,
-  ALIAS,
-  listening,
-  type ThisMac,
-  ThisMacAccess,
-  thisMac,
-} from "./access.js";
+  type ConnectorSettings,
+  Fault,
+  type Guide,
+  type GuideStep,
+  STEPS,
+  type StepId,
+} from "../management/schema.js";
+import type { CodexProvider } from "../provider/index.js";
+import { type RuntimeStore, token } from "../runtime/index.js";
+import { ALIAS, listening, type ThisMac, ThisMacAccess, thisMac } from "./access.js";
 import type { SetupService } from "./index.js";
 
-export const STEPS = [
-  "hub",
-  "login",
-  "access",
-  "desktop",
-  "folder",
-  "actor",
-  "session",
-  "tools",
-] as const;
-export type StepId = (typeof STEPS)[number];
-export interface GuideStep {
-  id: StepId;
-  state: "done" | "missing" | "broken" | "waiting";
-  /** What was checked and what it saw; a waiting step's is `WAITING`, naming the step it waits on. */
-  code: string;
-  details?: Record<string, unknown>;
-}
-export interface Guide {
-  /** Whether this Provider runs on a Mac the guide can set up; otherwise only other setups apply. */
-  available: boolean;
-  checkedAt: string;
-  folder: { path?: string; suggested: string };
-  steps: GuideStep[];
-}
 type Check = Omit<GuideStep, "id">;
 const done = (code: string, details?: Record<string, unknown>): Check => ({
   state: "done",
@@ -135,6 +111,10 @@ export class GuideService {
       }
     return {
       available: this.available,
+      inUse: this.inUse,
+      accessPresent:
+        this.available &&
+        (!!this.store.data.access || Object.values(this.access.inspect().present).some(Boolean)),
       checkedAt: new Date().toISOString(),
       folder: {
         ...(this.store.data.settings.workspaceRoot
