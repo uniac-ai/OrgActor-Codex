@@ -5,6 +5,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  renameSync,
   rmSync,
   statSync,
   writeFileSync,
@@ -27,6 +28,12 @@ const temp = (t: test.TestContext, name: string) => {
   return dir;
 };
 
+/** Desktop's `codex --version` answers; `ssh -G` is real, since it only reads the config. */
+const fakeSsh = async (args: string[]) =>
+  args[0] === "-G"
+    ? { code: 0, stdout: execFileSync("ssh", args, { encoding: "utf8", stdio: "pipe" }) }
+    : { code: 0, stdout: "codex-cli 1.2.3\n" };
+
 function fakeMac(home: string, overrides: Partial<ThisMac> = {}): ThisMac {
   const hostKey = join(home, "ssh_host_ed25519_key.pub");
   writeFileSync(hostKey, `${ed25519("host").public} root@mac\n`);
@@ -41,7 +48,7 @@ function fakeMac(home: string, overrides: Partial<ThisMac> = {}): ThisMac {
     hostKey,
     codex: [join(home, "absent", "codex"), codex],
     sshPort: 22,
-    ssh: async () => ({ code: 0, stdout: "codex-cli 1.2.3\n" }),
+    ssh: fakeSsh,
     ...overrides,
   };
 }
@@ -80,8 +87,8 @@ for (const start of ["existing", "none"] as const)
     assert.deepEqual(
       actions,
       start === "existing"
-        ? ["key", "file", "file", "append", "backup", "append", "backend"]
-        : ["key", "file", "file", "directory", "append", "append", "backend"],
+        ? ["key", "file", "key", "file", "file", "append", "backup", "append", "backend"]
+        : ["key", "file", "key", "file", "file", "directory", "append", "append", "backend"],
     );
     const authorized = plan.writes.find(
       (w) => w.action === "append" && w.path.endsWith("authorized_keys"),
@@ -93,7 +100,10 @@ for (const start of ["existing", "none"] as const)
         `^restrict,from="127.0.0.1,::1",command="exec ${mac.codex[1]} app-server proxy" ssh-ed25519 `,
       ),
     );
-    assert.match(authorized.lines[2], /no-agent-forwarding,no-X11-forwarding,no-user-rc,command=/);
+    assert.match(
+      authorized.lines[2],
+      /no-agent-forwarding,no-port-forwarding,no-X11-forwarding,no-user-rc,command=/,
+    );
 
     const backend = access.apply(plan.id);
     assert.throws(
@@ -105,9 +115,9 @@ for (const start of ["existing", "none"] as const)
     const config = readFileSync(join(ssh, "config"), "utf8");
     const keys = readFileSync(join(ssh, "authorized_keys"), "utf8");
     if (start === "existing") {
-      assert.ok(
-        config.startsWith(`${before.config}\n# BEGIN OrgActor-Codex ${root}\nHost this-mac\n`),
-      );
+      // Before the first Host line, so no earlier block takes this-mac's options first.
+      assert.ok(config.startsWith(`# BEGIN OrgActor-Codex ${root}\nHost this-mac\n`));
+      assert.ok(config.endsWith(`# END OrgActor-Codex ${root}\n${before.config}`));
       assert.ok(keys.startsWith(before.authorizedKeys));
       const backup = plan.writes.find((w) => w.action === "backup");
       assert.ok(backup && readFileSync(backup.path, "utf8") === before.config);
@@ -115,6 +125,9 @@ for (const start of ["existing", "none"] as const)
     assert.equal(statSync(join(ssh, "authorized_keys")).mode & 0o777, 0o600);
     assert.equal(statSync(join(root, "ssh", "desktop")).mode & 0o777, 0o600);
     assert.equal(statSync(join(root, "ssh", "desktop-shell")).mode & 0o777, 0o700);
+    // The Provider's own key and known host, which its SSH backend connects with, are in the review.
+    assert.equal(statSync(join(root, "ssh-key")).mode & 0o777, 0o600);
+    assert.equal(statSync(join(root, "known-hosts")).mode & 0o777, 0o600);
     assert.deepEqual(access.inspect().present, {
       authorizedKeys: true,
       config: true,
@@ -127,10 +140,11 @@ for (const start of ["existing", "none"] as const)
     );
 
     // The person's own line after the block is kept.
-    if (start === "existing") writeFileSync(join(ssh, "config"), `${config}Host later\n`);
+    if (start === "existing") writeFileSync(join(ssh, "config"), `${config}\nHost later\n`);
     access.remove();
     assert.equal(store.data.access, undefined);
-    assert.equal(existsSync(join(root, "ssh", "desktop")), false);
+    for (const left of ["ssh", "ssh-key", "known-hosts"])
+      assert.equal(existsSync(join(root, left)), false, left);
     if (start === "existing") {
       assert.equal(readFileSync(join(ssh, "config"), "utf8"), `${before.config}\nHost later\n`);
       assert.equal(readFileSync(join(ssh, "authorized_keys"), "utf8"), before.authorizedKeys);
@@ -426,4 +440,179 @@ test("Detach Actor forgets the Actor here and keeps its Hub identity, so setup c
   delete store.data.journal["http://hub|codex|pending"];
   setup.configure({ workspaceRoot: "/elsewhere" });
   assert.equal(store.data.settings.workspaceRoot, "/elsewhere");
+});
+
+test("a review goes stale when ~/.ssh changes before the person confirms", (t) => {
+  const home = temp(t, "home");
+  const store = new RuntimeStore(join(temp(t, "runtime"), "runtime"));
+  const access = new ThisMacAccess(store, fakeMac(home));
+  mkdirSync(join(home, ".ssh"));
+  writeFileSync(join(home, ".ssh", "config"), "Host other\n");
+  const plan = access.plan();
+  writeFileSync(join(home, ".ssh", "config"), "Host this-mac\n  HostName elsewhere\n");
+  assert.throws(
+    () => access.apply(plan.id),
+    (e: Fault) => e.code === "PLAN_STALE",
+  );
+  assert.equal(
+    readFileSync(join(home, ".ssh", "config"), "utf8"),
+    "Host this-mac\n  HostName elsewhere\n",
+  );
+  assert.equal(existsSync(join(home, ".ssh", "authorized_keys")), false);
+  assert.equal(store.data.access, undefined);
+});
+
+test("without its record, removal takes the blocks naming this runtime, so setup can start over", async (t) => {
+  const home = temp(t, "home");
+  const root = join(temp(t, "runtime"), "runtime");
+  const mac = fakeMac(home);
+  mkdirSync(join(home, ".ssh"));
+  const before = { config: "Host other\n  User someone\n", keys: "ssh-ed25519 AAAAexisting a@b\n" };
+  writeFileSync(join(home, ".ssh", "config"), before.config);
+  writeFileSync(join(home, ".ssh", "authorized_keys"), before.keys);
+  const first = new ThisMacAccess(new RuntimeStore(root), mac);
+  first.apply(first.plan().id);
+  // The runtime is moved aside and a fresh one starts at the same path, with no record.
+  renameSync(root, `${root}-moved`);
+  const store = new RuntimeStore(root);
+  const backend = { close: () => {}, get: async () => Promise.reject(new Error("unused")) };
+  const provider = {
+    snapshot: () => ({ enabled: true, connected: true, state: "connected" as const }),
+    setEnabled: async () => {},
+  };
+  const guide = new GuideService(
+    store,
+    new SetupService(store, backend as any),
+    backend,
+    provider,
+    mac,
+  );
+  const sshd = createServer((socket) => socket.end());
+  await new Promise<void>((resolve) => sshd.listen(0, "127.0.0.1", resolve));
+  t.after(() => sshd.close());
+  (mac as { sshPort: number }).sshPort = (sshd.address() as any).port;
+  const access = (await guide.check(true)).steps.find((s) => s.id === "access");
+  assert.equal(access?.code, "ACCESS_INCOMPLETE");
+  assert.throws(
+    () => guide.planAccess(),
+    (e: Fault) => e.code === "ACCESS_PRESENT",
+  );
+  await guide.removeAccess();
+  assert.equal(readFileSync(join(home, ".ssh", "config"), "utf8"), before.config);
+  assert.equal(readFileSync(join(home, ".ssh", "authorized_keys"), "utf8"), before.keys);
+  assert.equal(
+    (await guide.check(true)).steps.find((s) => s.id === "access")?.code,
+    "ACCESS_MISSING",
+  );
+  assert.ok(guide.planAccess().writes.length);
+});
+
+for (const earlier of ["Host *", "global"] as const)
+  test(`an earlier ${earlier} option for this-mac is ${earlier === "Host *" ? "placed after the block" : "reported as overriding it"}`, async (t) => {
+    const home = temp(t, "home");
+    const store = new RuntimeStore(join(temp(t, "runtime"), "runtime"));
+    const sshd = createServer((socket) => socket.end());
+    await new Promise<void>((resolve) => sshd.listen(0, "127.0.0.1", resolve));
+    t.after(() => sshd.close());
+    const access = new ThisMacAccess(
+      store,
+      fakeMac(home, { sshPort: (sshd.address() as any).port }),
+    );
+    mkdirSync(join(home, ".ssh"));
+    const overrides = "  StrictHostKeyChecking no\n  UserKnownHostsFile /dev/null\n";
+    writeFileSync(
+      join(home, ".ssh", "config"),
+      earlier === "Host *"
+        ? `Host *\n${overrides}`
+        : `${overrides.replaceAll("  ", "")}Host *\n  User x\n`,
+    );
+    const plan = access.plan();
+    const block = plan.writes.find((w) => w.action === "append" && w.path.endsWith("config"));
+    assert.equal(block?.action === "append" && block.before, "Host *");
+    const written = access.apply(plan.id);
+    store.data.settings.backend = {
+      kind: "ssh",
+      host: "127.0.0.1",
+      port: written.port,
+      user: written.user,
+      privateKey: written.privateKey,
+      knownHosts: written.knownHosts,
+    };
+    const tested = await access.test();
+    const overridden = earlier === "Host *" ? [] : ["stricthostkeychecking", "userknownhostsfile"];
+    assert.deepEqual(tested.overridden, overridden);
+    if (!overridden.length) return;
+    const backend = { close: () => {}, get: async () => Promise.reject(new Error("unused")) };
+    const provider = {
+      snapshot: () => ({ enabled: true, connected: true, state: "connected" as const }),
+      setEnabled: async () => {},
+    };
+    const guide = new GuideService(
+      store,
+      new SetupService(store, backend as any),
+      backend,
+      provider,
+      access.mac,
+    );
+    const step = (await guide.check(true)).steps.find((s) => s.id === "access");
+    assert.deepEqual(step, {
+      id: "access",
+      state: "broken",
+      code: "ACCESS_OVERRIDDEN",
+      details: { path: join(home, ".ssh", "config"), options: overridden },
+    });
+  });
+
+test("folder paths must be in their plain form, and the disconnect command is quoted", async (t) => {
+  const home = temp(t, "home");
+  const store = new RuntimeStore(join(temp(t, "runtime"), "runtime"));
+  const backend = { close: () => {}, get: async () => Promise.reject(new Error("unused")) };
+  const provider = {
+    snapshot: () => ({ enabled: true, connected: true, state: "connected" as const }),
+    setEnabled: async () => {},
+  };
+  const guide = new GuideService(
+    store,
+    new SetupService(store, backend as any),
+    backend,
+    provider,
+    fakeMac(home),
+  );
+  for (const path of [`${home}/folder/`, `${home}/a/../folder`, `${home}/fol\nder`, "folder"])
+    await assert.rejects(guide.chooseFolder(path), (e: Fault) => e.code === "FOLDER_INVALID", path);
+  const trial = join(home, "My Projects", "it's here");
+  mkdirSync(join(trial, ".codex"), { recursive: true });
+  writeFileSync(join(trial, ".codex", "config.toml"), "[mcp_servers.org]\n");
+  store.data.settings.workspaceRoot = trial;
+  const folder = await (guide as any).folder();
+  assert.equal(
+    folder.details.disconnect,
+    `agentorg-mcp disconnect codex --project '${join(home, "My Projects")}/it'\\''s here'`,
+  );
+});
+
+test("setup changes run one at a time, so concurrent ones keep each other's settings", async (t) => {
+  const home = temp(t, "home");
+  const store = new RuntimeStore(join(temp(t, "runtime"), "runtime"));
+  store.data.settings.hub = { url: "http://127.0.0.1:1", providerId: "codex" };
+  const backend = { close: () => {}, get: async () => Promise.reject(new Error("unused")) };
+  const provider = {
+    snapshot: () => ({ enabled: true, connected: true, state: "connected" as const }),
+    setEnabled: async (enabled: boolean) => {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      store.data.providerEnabled = enabled;
+    },
+  };
+  const guide = new GuideService(
+    store,
+    new SetupService(store, backend as any),
+    backend,
+    provider,
+    fakeMac(home),
+  );
+  const plan = guide.planAccess();
+  await Promise.all([guide.chooseFolder(join(home, "agentorg-codex")), guide.applyAccess(plan.id)]);
+  assert.equal(store.data.settings.workspaceRoot, join(home, "agentorg-codex"));
+  assert.equal(store.data.settings.backend?.kind, "ssh");
+  assert.equal(store.data.providerEnabled, true);
 });

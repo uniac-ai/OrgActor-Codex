@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -21,7 +22,11 @@ async function guided(t: test.TestContext) {
     hostKey: join(home, "host.pub"),
     codex: [join(home, "bin", "codex")],
     sshPort: 22,
-    ssh: async () => ({ code: 0, stdout: "codex-cli 1.2.3\n" }),
+    // Desktop's `codex --version` answers; `ssh -G` is real, since it only reads the config.
+    ssh: async (args) =>
+      args[0] === "-G"
+        ? { code: 0, stdout: execFileSync("ssh", args, { encoding: "utf8", stdio: "pipe" }) }
+        : { code: 0, stdout: "codex-cli 1.2.3\n" },
   };
   const server = await startServer({ root: join(dir, "runtime"), port: 0, mac });
   t.after(() => server.close());
