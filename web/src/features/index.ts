@@ -1,5 +1,12 @@
 import type { ReactNode } from "react";
-import type { ActorSnapshot, ProbeStage, PublicState } from "../../../src/management/schema";
+import type {
+  AccessWrite,
+  ActorSnapshot,
+  Guide,
+  ProbeStage,
+  PublicState,
+  StepId,
+} from "../../../src/management/schema";
 export type Page = "setup" | "provider" | "actors" | "backend";
 export interface SetupForm {
   kind: "ssh" | "app-server";
@@ -18,7 +25,45 @@ export interface ShellFeature {
   error: string | null;
   children: ReactNode;
 }
+export interface AttachForm {
+  actorId: string;
+  credential: string;
+  model: string;
+}
+/** A write the person reviews before the console makes it. */
+export type Consent =
+  | { kind: "access"; planId: string; writes: AccessWrite[] }
+  | { kind: "remove-access" }
+  | { kind: "create-folder"; path: string }
+  | { kind: "detach"; actorId: string };
+export interface ConsentFeature {
+  consent: Consent | null;
+  busy: boolean;
+  onCancel(): void;
+  onConfirm(): void;
+}
+/** The guided steps for Codex Desktop over SSH to this Mac. */
+export interface GuideFeature {
+  guide: Guide;
+  busy: boolean;
+  checking: boolean;
+  folder: string;
+  /** A folder just refused because AgentOrg's Codex adapter is connected there. */
+  refusedFolder: string | null;
+  onFolder(value: string): void;
+  onChooseFolder(path: string): void;
+  onRecheck(): void;
+  onSetUpAccess(): void;
+  onAsk(consent: Consent): void;
+  onConfirmSession(threadId: string): void;
+  attach: AttachForm;
+  onAttachField(name: keyof AttachForm, value: string): void;
+  onAttach(): void;
+  onPage(page: Page): void;
+}
 export interface SetupFeature {
+  /** Present when this Provider runs on a Mac the guide can set up. */
+  guided: GuideFeature | null;
   state: PublicState;
   form: SetupForm;
   busy: boolean;
@@ -45,9 +90,12 @@ export interface BackendFeature {
 }
 export interface ActorsFeature {
   actors: ActorSnapshot[];
+  guide: Guide | null;
+  onSetupStep(step: StepId): void;
+  onDetach(id: string): void;
   busy: boolean;
-  attach: { actorId: string; credential: string; model: string };
-  onAttachField(name: "actorId" | "credential" | "model", value: string): void;
+  attach: AttachForm;
+  onAttachField(name: keyof AttachForm, value: string): void;
   onAttach(): void;
   selectedActor: ActorSnapshot | null;
   onSelect(id: string | null): void;
@@ -67,6 +115,7 @@ export interface ViewSet {
   Shell(props: ShellFeature): ReactNode;
   Loading(props: { error: string | null }): ReactNode;
   Setup(props: SetupFeature): ReactNode;
+  Consent(props: ConsentFeature): ReactNode;
   Provider(props: ProviderFeature): ReactNode;
   Backend(props: BackendFeature): ReactNode;
   Actors(props: ActorsFeature): ReactNode;

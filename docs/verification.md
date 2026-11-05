@@ -29,6 +29,17 @@ The final SSH run tested source checkpoint `f28eb06300e8c98e1a1fc82b8a6317a2b73d
 
 ## Console captures
 
+The guided setup on a Mac, from `web/e2e/guide.spec.ts`. Its Mac, Hub and Codex are browser fixtures; the writes and the steps' checks are real.
+
+![Guided setup on a fresh Mac — browser fixture](../evidence/console/guide-fresh.png)
+![The review before SSH access is written — browser fixture](../evidence/console/guide-consent.png)
+![A folder connected to AgentOrg's adapter, refused — browser fixture](../evidence/console/guide-folder-refused.png)
+![An Actor's one blocking reason — browser fixture](../evidence/console/guide-actors-status.png)
+![Ready — browser fixture](../evidence/console/guide-ready.png)
+![Mobile guided setup — browser fixture](../evidence/console/mobile-guide.png)
+
+Other setups, as the console shows them off a Mac:
+
 ![Setup](../evidence/console/setup.png)
 ![Provider](../evidence/console/provider.png)
 ![Backend](../evidence/console/backend.png)

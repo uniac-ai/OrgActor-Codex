@@ -1,7 +1,7 @@
 import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
-import type { PublicState } from "../../../src/management/schema";
+import type { Guide, PublicState, StepId } from "../../../src/management/schema";
 import { ManagementClient } from "../data/client";
-import type { Page, SetupForm } from "../features";
+import type { Consent, Page, SetupForm } from "../features";
 import { views } from "../views";
 
 const client = new ManagementClient();
@@ -30,13 +30,38 @@ export function ConsoleControl() {
     { processId: string; command: string; cwd: string }[] | null
   >(null);
   const [login, setLogin] = useState<{ loginId: string; authUrl: string } | null>(null);
-  const refresh = useCallback(async () => setState(await client.state()), []);
+  const [guide, setGuide] = useState<Guide | null>(null);
+  const [checking, setChecking] = useState(false);
+  const [consent, setConsent] = useState<Consent | null>(null);
+  const [folder, setFolder] = useState("");
+  const [refusedFolder, setRefusedFolder] = useState<string | null>(null);
+  const refresh = useCallback(async () => {
+    const [next, steps] = await Promise.all([client.state(), client.guide()]);
+    setState(next);
+    setGuide(steps);
+  }, []);
   useEffect(() => {
-    const update = () => void refresh().catch((e) => setError(e.message));
+    const update = () => void client.state().then(setState, (e) => setError(e.message));
     update();
     const timer = setInterval(update, 2000);
     return () => clearInterval(timer);
-  }, [refresh]);
+  }, []);
+  // The guided steps check themselves again every few seconds, as the person works in other apps.
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const update = () =>
+      void client.guide().then(
+        (next) => {
+          setGuide(next);
+          if (next.available) timer = setTimeout(update, 3000);
+        },
+        () => {
+          timer = setTimeout(update, 3000);
+        },
+      );
+    update();
+    return () => clearTimeout(timer);
+  }, []);
   const formRevision = useRef<number | undefined>(undefined);
   useEffect(() => {
     if (!state || formRevision.current === state.revision) return;
@@ -67,12 +92,80 @@ export function ConsoleControl() {
       setBusy(false);
     }
   };
+  const recheck = async () => {
+    setChecking(true);
+    try {
+      setGuide(await client.guide(true));
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setChecking(false);
+    }
+  };
+  const openStep = (step: StepId) => {
+    setPage("setup");
+    setTimeout(
+      () => document.getElementById(`step-${step}`)?.scrollIntoView({ block: "center" }),
+      50,
+    );
+  };
+  const attachActor = () =>
+    void perform(async () => {
+      await client.attach(attach.actorId, attach.credential, attach.model);
+      setAttach({ actorId: "", credential: "", model: "" });
+    });
+  const confirm = (c: Consent) =>
+    void perform(async () => {
+      try {
+        if (c.kind === "access") await client.applyAccess(c.planId);
+        else if (c.kind === "remove-access") await client.removeAccess();
+        else if (c.kind === "create-folder") await client.createFolder();
+        else await client.detach(c.actorId);
+      } finally {
+        setConsent(null);
+      }
+    });
   if (!state) return <views.Loading error={error} />;
+  const guided = guide?.available ? guide : null;
   const actor = state.actors.find((a) => a.actorId === selected);
   let content: ReactNode;
   if (page === "setup")
     content = (
       <views.Setup
+        guided={
+          guided && {
+            guide: guided,
+            busy,
+            checking,
+            folder,
+            refusedFolder,
+            onFolder: setFolder,
+            onChooseFolder: (path) =>
+              void perform(async () => {
+                try {
+                  await client.chooseFolder(path);
+                  setRefusedFolder(null);
+                  setFolder("");
+                } catch (e) {
+                  if ((e as { code?: string }).code !== "FOLDER_HAS_ADAPTER") throw e;
+                  setRefusedFolder(path);
+                }
+              }),
+            onRecheck: () => void recheck(),
+            onSetUpAccess: () =>
+              void perform(async () => {
+                const plan = await client.planAccess();
+                setConsent({ kind: "access", planId: plan.id, writes: plan.writes });
+              }),
+            onAsk: setConsent,
+            onConfirmSession: (threadId) =>
+              void perform(() => client.desktop(threadId, state.settings.workspaceRoot ?? "")),
+            attach,
+            onAttachField: (name, value) => setAttach((old) => ({ ...old, [name]: value })),
+            onAttach: attachActor,
+            onPage: setPage,
+          }
+        }
         state={state}
         form={form}
         busy={busy}
@@ -140,15 +233,13 @@ export function ConsoleControl() {
     content = (
       <views.Actors
         actors={state.actors}
+        guide={guided?.inUse ? guided : null}
+        onSetupStep={openStep}
+        onDetach={(actorId) => setConsent({ kind: "detach", actorId })}
         busy={busy}
         attach={attach}
         onAttachField={(name, value) => setAttach((s) => ({ ...s, [name]: value }))}
-        onAttach={() =>
-          void perform(async () => {
-            await client.attach(attach.actorId, attach.credential, attach.model);
-            setAttach({ actorId: "", credential: "", model: "" });
-          })
-        }
+        onAttach={attachActor}
         selectedActor={actor ?? null}
         onSelect={setSelected}
         text={text}
@@ -201,6 +292,12 @@ export function ConsoleControl() {
   return (
     <views.Shell page={page} onPage={setPage} error={error}>
       {content}
+      <views.Consent
+        consent={consent}
+        busy={busy}
+        onCancel={() => setConsent(null)}
+        onConfirm={() => consent && confirm(consent)}
+      />
     </views.Shell>
   );
 }

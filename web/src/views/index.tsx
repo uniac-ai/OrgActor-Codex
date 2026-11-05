@@ -1,6 +1,7 @@
 import {
   Cable,
   CheckCircle2,
+  ChevronRight,
   CircleHelp,
   KeyRound,
   Monitor,
@@ -50,6 +51,7 @@ import {
 import { Textarea } from "@/components/ui/textarea";
 import type { Probe, ProbeStage } from "../../../src/management/schema";
 import type { ActorsFeature, SetupFeature, SetupForm, ViewSet } from "../features";
+import { AttachFields, actorStatus, ConsentView, GuideSteps, nextLine, TITLES } from "./guide";
 
 function Heading({ title, children }: { title: string; children?: ReactNode }) {
   return (
@@ -97,6 +99,25 @@ const stages: { id: ProbeStage; title: string; description: string }[] = [
   { id: "hub", title: "Hub admission", description: "Verify the enrolled Provider identity." },
 ];
 function SetupView(p: SetupFeature) {
+  if (!p.guided)
+    return (
+      <>
+        <Heading title="Setup">Connect your Codex workspace.</Heading>
+        <ManualSetup {...p} />
+      </>
+    );
+  return (
+    <>
+      <Heading title="Setup">{nextLine(p.guided.guide)}</Heading>
+      <GuideSteps {...p.guided} />
+      <details className="other-setups" open={!p.guided.guide.inUse && !!p.state.settings.backend}>
+        <summary>Other setups</summary>
+        <ManualSetup {...p} />
+      </details>
+    </>
+  );
+}
+function ManualSetup(p: SetupFeature) {
   const field = (name: keyof SetupForm, label: string, secret = false, help?: string) => (
     <Field label={label} help={help}>
       <Input
@@ -109,152 +130,177 @@ function SetupView(p: SetupFeature) {
     </Field>
   );
   return (
-    <>
-      <Heading title="Setup">Connect your Codex workspace.</Heading>
-      <div className="setup-layout">
-        <div className="stack">
-          <Card>
-            <CardHeader>
-              <CardTitle>Codex backend</CardTitle>
-              <CardDescription>
-                Use the backend shared with your Codex Desktop connection.
-              </CardDescription>
-            </CardHeader>
-            <CardContent className="stack">
-              <Field label="Connection">
-                <Select
-                  value={p.form.kind}
-                  onValueChange={(value) => p.onField("kind", value as "ssh" | "app-server")}
-                >
-                  <SelectTrigger aria-label="Connection">
-                    <SelectValue>
-                      {p.form.kind === "ssh" ? "SSH host" : "Co-located app server"}
-                    </SelectValue>
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="ssh">SSH host</SelectItem>
-                    <SelectItem value="app-server">Co-located app server</SelectItem>
-                  </SelectContent>
-                </Select>
-              </Field>
-              {p.form.kind === "ssh" ? (
-                <>
-                  <div className="grid-two">
-                    {field("host", "Host")}
-                    {field("port", "SSH port")}
-                  </div>
-                  {field("user", "SSH user")}
-                  {field(
-                    "privateKey",
-                    "SSH private key",
-                    true,
-                    p.state.settings.backend?.privateKeyPresent
-                      ? "A key is stored. Leave blank to keep it."
-                      : "Stored privately on the container.",
-                  )}
-                  <Field label="Verified known-host entry">
-                    <Textarea
-                      aria-label="Verified known-host entry"
-                      rows={3}
-                      value={p.form.knownHosts}
-                      onChange={(e) => p.onField("knownHosts", e.target.value)}
-                      placeholder="[host]:port ssh-ed25519 …"
-                    />
-                  </Field>
-                </>
-              ) : (
-                field(
-                  "endpoint",
-                  "App server endpoint",
-                  false,
-                  "Use an existing unix:///path/to/socket or protected WebSocket listener.",
-                )
-              )}
-              {field(
-                "workspaceRoot",
-                "Workspace root",
-                false,
-                "Use the exact root saved in Codex Desktop's SSH connection or local project.",
-              )}
-              {field(
-                "bridgeUrl",
-                "Container MCP address",
-                false,
-                "This address must be reachable from the Codex host.",
-              )}
-            </CardContent>
-          </Card>
-          <div className="actions">
-            <Button disabled={p.busy} onClick={p.onSave}>
-              Save connections
-            </Button>
-            <span className="muted text-xs">
-              Pause enabled connections before changing settings.
-            </span>
-          </div>
-        </div>
-        <aside className="stack">
-          <Card>
-            <CardHeader>
-              <CardTitle>Verify setup</CardTitle>
-            </CardHeader>
-            <CardContent className="probe-list">
-              {stages.map((s, i) => (
-                <div className="probe" key={s.id}>
-                  <div className="step-number">{i + 1}</div>
-                  <div className="min-w-0 flex-1">
-                    <h3>{s.title}</h3>
-                    <p>{s.description}</p>
-                    <Status
-                      probe={p.state.probes[s.id]}
-                      missing={s.id === "desktop" ? confirmInDesktop : undefined}
-                    />
-                    {p.state.probes[s.id] ? (
-                      <p className="probe-code">
-                        {p.state.probes[s.id]?.code.replaceAll("_", " ").toLowerCase()}
-                      </p>
-                    ) : null}
-                  </div>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    aria-label={`Check ${s.title}`}
-                    disabled={p.busy}
-                    onClick={() => p.onProbe(s.id)}
-                  >
-                    <RefreshCw />
-                  </Button>
+    <div className="setup-layout">
+      <div className="stack">
+        <Card>
+          <CardHeader>
+            <CardTitle>Codex backend</CardTitle>
+            <CardDescription>
+              Use the backend shared with your Codex Desktop connection.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="stack">
+            <Field label="Connection">
+              <Select
+                value={p.form.kind}
+                onValueChange={(value) => p.onField("kind", value as "ssh" | "app-server")}
+              >
+                <SelectTrigger aria-label="Connection">
+                  <SelectValue>
+                    {p.form.kind === "ssh" ? "SSH host" : "Co-located app server"}
+                  </SelectValue>
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="ssh">SSH host</SelectItem>
+                  <SelectItem value="app-server">Co-located app server</SelectItem>
+                </SelectContent>
+              </Select>
+            </Field>
+            {p.form.kind === "ssh" ? (
+              <>
+                <div className="grid-two">
+                  {field("host", "Host")}
+                  {field("port", "SSH port")}
                 </div>
-              ))}
-            </CardContent>
-          </Card>
-          <p className="muted text-sm">
-            In Codex Desktop, open Settings → Connections → SSH and use the exact workspace root
-            saved above. Open an attached Actor's session to confirm it appears. Actors that Codex
-            Desktop answers for stay offline in the Hub until you confirm.
-          </p>
-          <Field label="Session visible in Desktop">
-            <Input
-              aria-label="Session visible in Desktop"
-              placeholder="Attached Actor's session ID"
-              value={p.desktopThread}
-              onChange={(e) => p.onDesktopThread(e.target.value)}
-            />
-          </Field>
-          <Button
-            variant="outline"
-            disabled={p.busy || !p.desktopThread}
-            onClick={p.onConfirmDesktop}
-          >
-            Confirm I see this session
+                {field("user", "SSH user")}
+                {field(
+                  "privateKey",
+                  "SSH private key",
+                  true,
+                  p.state.settings.backend?.privateKeyPresent
+                    ? "A key is stored. Leave blank to keep it."
+                    : "Stored privately on the container.",
+                )}
+                <Field label="Verified known-host entry">
+                  <Textarea
+                    aria-label="Verified known-host entry"
+                    rows={3}
+                    value={p.form.knownHosts}
+                    onChange={(e) => p.onField("knownHosts", e.target.value)}
+                    placeholder="[host]:port ssh-ed25519 …"
+                  />
+                </Field>
+              </>
+            ) : (
+              field(
+                "endpoint",
+                "App server endpoint",
+                false,
+                "Use an existing unix:///path/to/socket or protected WebSocket listener.",
+              )
+            )}
+            {field(
+              "workspaceRoot",
+              "Workspace root",
+              false,
+              "Use the exact root saved in Codex Desktop's SSH connection or local project.",
+            )}
+            {field(
+              "bridgeUrl",
+              "Container MCP address",
+              false,
+              "This address must be reachable from the Codex host.",
+            )}
+          </CardContent>
+        </Card>
+        <div className="actions">
+          <Button disabled={p.busy} onClick={p.onSave}>
+            Save connections
           </Button>
-        </aside>
+          <span className="muted text-xs">Pause enabled connections before changing settings.</span>
+        </div>
       </div>
-    </>
+      <aside className="stack">
+        <Card>
+          <CardHeader>
+            <CardTitle>Verify setup</CardTitle>
+          </CardHeader>
+          <CardContent className="probe-list">
+            {stages.map((s, i) => (
+              <div className="probe" key={s.id}>
+                <div className="step-number">{i + 1}</div>
+                <div className="min-w-0 flex-1">
+                  <h3>{s.title}</h3>
+                  <p>{s.description}</p>
+                  <Status
+                    probe={p.state.probes[s.id]}
+                    missing={s.id === "desktop" ? confirmInDesktop : undefined}
+                  />
+                  {p.state.probes[s.id] ? (
+                    <p className="probe-code">
+                      {p.state.probes[s.id]?.code.replaceAll("_", " ").toLowerCase()}
+                    </p>
+                  ) : null}
+                </div>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  aria-label={`Check ${s.title}`}
+                  disabled={p.busy}
+                  onClick={() => p.onProbe(s.id)}
+                >
+                  <RefreshCw />
+                </Button>
+              </div>
+            ))}
+          </CardContent>
+        </Card>
+        <p className="muted text-sm">
+          In Codex Desktop, open Settings → Connections → SSH and use the exact workspace root saved
+          above. Open an attached Actor's session to confirm it appears. Actors that Codex Desktop
+          answers for stay offline in the Hub until you confirm.
+        </p>
+        <Field label="Session visible in Desktop">
+          <Input
+            aria-label="Session visible in Desktop"
+            placeholder="Attached Actor's session ID"
+            value={p.desktopThread}
+            onChange={(e) => p.onDesktopThread(e.target.value)}
+          />
+        </Field>
+        <Button
+          variant="outline"
+          disabled={p.busy || !p.desktopThread}
+          onClick={p.onConfirmDesktop}
+        >
+          Confirm I see this session
+        </Button>
+      </aside>
+    </div>
+  );
+}
+function ActorStatus({
+  status,
+  onStep,
+}: {
+  status: ReturnType<typeof actorStatus>;
+  onStep: ActorsFeature["onSetupStep"];
+}) {
+  if (status.step)
+    return (
+      <Button
+        variant="outline"
+        size="sm"
+        className="state-missing"
+        onClick={() => onStep(status.step as never)}
+      >
+        {status.text}
+        <ChevronRight />
+      </Button>
+    );
+  return (
+    <Badge variant="outline" className={status.ready ? "status-ready" : ""}>
+      {status.text}
+    </Badge>
   );
 }
 function ActorsView(p: ActorsFeature) {
   const actor = p.selectedActor;
+  const step = p.guide?.steps.find((s) => s.id === "actor");
+  // Attaching follows the guide's order: the folder open in Desktop and a session accepted there.
+  const gate =
+    step?.state === "waiting" ? { on: step.details?.on as keyof typeof TITLES } : undefined;
+  const status = actor ? actorStatus(actor, p.guide) : undefined;
   return (
     <>
       <Heading title="Actors">Attach existing Hub positions to managed Codex sessions.</Heading>
@@ -265,37 +311,24 @@ function ActorsView(p: ActorsFeature) {
             Use the identity and bootstrap credential issued by your Hub.
           </CardDescription>
         </CardHeader>
-        <CardContent>
+        <CardContent className="stack">
           <div className="attach-row">
-            <Field label="Actor ID">
-              <Input
-                aria-label="Actor ID"
-                value={p.attach.actorId}
-                onChange={(e) => p.onAttachField("actorId", e.target.value)}
-              />
-            </Field>
-            <Field label="Actor credential">
-              <Input
-                aria-label="Actor credential"
-                type="password"
-                autoComplete="off"
-                value={p.attach.credential}
-                onChange={(e) => p.onAttachField("credential", e.target.value)}
-              />
-            </Field>
-            <Field label="Model (optional)">
-              <Input
-                aria-label="Model (optional)"
-                placeholder="Backend default"
-                value={p.attach.model}
-                onChange={(e) => p.onAttachField("model", e.target.value)}
-              />
-            </Field>
-            <Button disabled={p.busy || !p.attach.actorId} onClick={p.onAttach}>
+            <AttachFields attach={p.attach} onAttachField={p.onAttachField} />
+            <Button disabled={p.busy || !p.attach.actorId || !!gate} onClick={p.onAttach}>
               <Plus />
               Attach Actor
             </Button>
           </div>
+          {gate ? (
+            <Button
+              variant="link"
+              className="self-start px-0"
+              onClick={() => p.onSetupStep(gate.on)}
+            >
+              Attaching waits for {TITLES[gate.on].toLowerCase()} in Setup
+              <ChevronRight />
+            </Button>
+          ) : null}
         </CardContent>
       </Card>
       <div className="actor-layout">
@@ -312,7 +345,7 @@ function ActorsView(p: ActorsFeature) {
                   <TableHeader>
                     <TableRow>
                       <TableHead>Actor</TableHead>
-                      <TableHead>Connection</TableHead>
+                      <TableHead>Status</TableHead>
                       <TableHead>Queue</TableHead>
                       <TableHead>Requests</TableHead>
                       <TableHead>
@@ -329,17 +362,7 @@ function ActorsView(p: ActorsFeature) {
                           </Button>
                         </TableCell>
                         <TableCell>
-                          <Badge variant="outline">
-                            {
-                              {
-                                connected: "Connected",
-                                connecting: "Connecting",
-                                paused: "Paused",
-                                suspended: "Suspended",
-                                "awaiting-desktop": confirmInDesktop,
-                              }[a.connectionState]
-                            }
-                          </Badge>
+                          <ActorStatus status={actorStatus(a, p.guide)} onStep={p.onSetupStep} />
                         </TableCell>
                         <TableCell>{a.queued}</TableCell>
                         <TableCell>
@@ -381,11 +404,20 @@ function ActorsView(p: ActorsFeature) {
               </CardDescription>
             </CardHeader>
             <CardContent className="stack">
-              {actor.connectionState === "awaiting-desktop" ? (
-                <div role="status" className="notice">
-                  {confirmInDesktop}: open it in Codex Desktop, then confirm session{" "}
-                  {actor.threadId} in Setup. Until then this Actor stays offline in the Hub, and
-                  messages to it wait there.
+              {status && !status.ready ? (
+                <div role="status" className="notice actor-reason">
+                  <span>
+                    {status.text}
+                    {actor.connectionState === "awaiting-desktop"
+                      ? `. Until then ${actor.actorId} stays offline in the Hub, and messages to it wait there.`
+                      : null}
+                  </span>
+                  {status.step ? (
+                    <Button variant="link" onClick={() => p.onSetupStep(status.step as never)}>
+                      Open in Setup
+                      <ChevronRight />
+                    </Button>
+                  ) : null}
                 </div>
               ) : null}
               <Field label="Approval owner">
@@ -474,6 +506,14 @@ function ActorsView(p: ActorsFeature) {
               <div className="output" role="log" aria-label="Actor output">
                 {actor.output || "Output appears when the Actor runs."}
               </div>
+              <Button
+                variant="ghost"
+                className="self-start"
+                disabled={p.busy}
+                onClick={() => p.onDetach(actor.actorId)}
+              >
+                Detach Actor
+              </Button>
             </CardContent>
           </Card>
         ) : null}
@@ -574,6 +614,7 @@ export const views = {
     </div>
   ),
   Setup: SetupView,
+  Consent: ConsentView,
   Provider: (p) => (
     <>
       <Heading title="Provider">Provision Codex execution for existing Hub Actors.</Heading>

@@ -1,5 +1,7 @@
 import type {
+  AccessPlan,
   ConnectorSettings,
+  Guide,
   Probe,
   ProbeStage,
   PublicState,
@@ -14,8 +16,35 @@ export class ManagementClient {
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     });
     const value = await r.json();
-    if (!r.ok) throw new Error(value.error?.message ?? "The console could not reach the server.");
+    if (!r.ok)
+      throw Object.assign(
+        new Error(value.error?.message ?? "The console could not reach the server."),
+        { code: value.error?.code as string | undefined },
+      );
     return value;
+  }
+  guide(recheck = false) {
+    return recheck
+      ? this.request<Guide>("/setup/guide/check", "POST")
+      : this.request<Guide>("/setup/guide");
+  }
+  planAccess() {
+    return this.request<AccessPlan>("/setup/guide/access/plan", "POST");
+  }
+  applyAccess(planId: string) {
+    return this.request("/setup/guide/access", "PUT", { planId });
+  }
+  removeAccess() {
+    return this.request("/setup/guide/access", "DELETE");
+  }
+  chooseFolder(path: string) {
+    return this.request("/setup/guide/folder", "PUT", { path });
+  }
+  createFolder() {
+    return this.request("/setup/guide/folder", "POST");
+  }
+  detach(id: string) {
+    return this.request(`/actors/${encodeURIComponent(id)}`, "DELETE");
   }
   state() {
     return this.request<PublicState>("/state");

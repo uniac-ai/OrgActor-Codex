@@ -29,6 +29,32 @@ Open `http://localhost:8787/` directly. The compose service publishes only on lo
 
 ## Connect
 
+### On a Mac: guided setup
+
+When the console runs on the Mac where Codex Desktop runs, **Setup** guides one path: Codex Desktop on this Mac, reached over SSH to this Mac. On that path Desktop both shows and answers the Actor's session. Each step says whether it is done, what it saw, and who acts. A step waits while an earlier one isn't done. The page checks itself again every 3 seconds, and every step has **Re-check**.
+
+1. **Hub:** the Provider is admitted (see step 4 below for the Hub binding).
+2. **Remote Login:** System Settings → General → Sharing → Remote Login on, with access for only your user and full disk access off.
+3. **SSH access:** **Set up SSH access for this Mac** shows every write first, and nothing is written until you confirm. It covers:
+   - keys in the Provider's runtime folder;
+   - two `authorized_keys` lines, from this Mac only, one forced to `codex app-server proxy`;
+   - a `Host this-mac` block, after a backup of `~/.ssh/config`;
+   - `known_hosts` from the Mac's own host key;
+   - the Desktop wrapper.
+
+   **Remove SSH access** removes exactly what was written.
+4. **Codex Desktop connected:** in Codex Desktop, Settings → Connections → SSH → `this-mac` → Connect.
+5. **Workspace folder:** a folder of the Actor's own, created when you confirm. Then add it in Desktop under `this-mac`. A folder connected to AgentOrg's Codex adapter (`agentorg-mcp connect codex`) is refused: Codex would refuse the Actor's session there. The step offers another folder or the exact `disconnect` command.
+6. **Actor:** attach it here, or create it from the Hub. Attaching waits until steps 1 to 5 are done.
+7. **Session in Desktop:** open the named session in Desktop under `this-mac` → the folder, then **I see it**.
+8. **Actor tools:** the session lists its Hub tools.
+
+The Actors table's **Status** gives each Actor's one blocking reason and links its Setup step. **Detach Actor** forgets an Actor on this Provider and keeps its Hub identity, for example to set it up again under another setup.
+
+### Other setups
+
+Setup keeps these collapsed under **Other setups** on a Mac, and shows them alone elsewhere.
+
 1. In **Setup**, choose SSH first for a container deployment. Supply the target host, port, user, private key and a verified known-host entry. SSH uses strict host verification and the existing host's `codex app-server proxy`. The host must already run the app server used by Codex Desktop. Co-located mode accepts an existing `unix:///absolute/socket/path`, loopback WebSocket or TLS WebSocket listener.
 2. Set the exact workspace root saved in Codex Desktop's SSH connection or local project. Set the container MCP address as reachable **from the Codex host**, including `/mcp`. For a remote machine, arrange a protected network route or SSH reverse forwarding to this container; loopback addresses refer to each machine's own network namespace. On Docker Desktop, the SSH host may be `host.docker.internal` with its corresponding verified known-host entry.
 3. Check the backend and account. Authentication uses the backend's existing ChatGPT sign-in and plan quota. **Start sign-in** is an explicit operator action with one login owner. Quota unavailable and quota denied are separate observations. Native session creation uses read-only sandboxing and on-request approvals. The session's own Hub Tools are pre-approved, since the Hub already decides what the Actor may do with them.

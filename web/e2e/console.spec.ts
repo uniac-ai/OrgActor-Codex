@@ -8,7 +8,21 @@ let module: Awaited<ReturnType<typeof startServer>>;
 let dir: string;
 test.beforeEach(async ({ page }) => {
   dir = mkdtempSync(join(tmpdir(), "orgactor-browser-"));
-  module = await startServer({ root: dir, port: 0 });
+  // Off a Mac, Setup shows the existing setups only.
+  module = await startServer({
+    root: dir,
+    port: 0,
+    mac: {
+      platform: "linux",
+      home: dir,
+      user: "person",
+      shell: "/bin/sh",
+      hostKey: join(dir, "absent"),
+      codex: [],
+      sshPort: 22,
+      ssh: async () => ({ code: 255, stdout: "" }),
+    },
+  });
   await page.goto(module.url);
   await expect(page.getByRole("heading", { name: "Setup", exact: true })).toBeVisible();
 });
@@ -202,6 +216,13 @@ test("operator controls use actor-scoped API routes and separate interrupt from 
     page.getByText(/its AgentOrg approval ask, as the Actor it routes to, when one is bound/),
   ).toBeVisible();
   await screenshot(page, "mobile-native-form-fixture");
+  await page.getByRole("button", { name: "Detach Actor" }).click();
+  await expect(page.getByRole("dialog")).toContainText(
+    "Its Hub identity and its Codex session stay",
+  );
+  await page.getByRole("dialog").getByRole("button", { name: "Detach", exact: true }).click();
+  await expect(page.getByText("No Actors attached")).toBeVisible();
+  expect(module.store.data.actors.act_browser_fixture).toBeUndefined();
 });
 test("mobile navigation and setup remain reachable without clipping", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
