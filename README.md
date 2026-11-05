@@ -58,7 +58,7 @@ npm test
 npm run test:browser
 ```
 
-CI pins Node 22.22.0 and 24.22.1; browser and container checks run on Node 24. Model-free integration launches the checked Hub wire/type checkpoint `98d651ede8f5dd4f98a86c51825f06d0db04e1b7` through its public CLI, with an isolated temporary home and a fake native backend. The same public CLI path supports separately authorized, opt-in real model integration:
+CI pins Node 22.22.0 and 24.22.1; browser and container checks run on Node 24. Model-free integration launches the checked Hub wire/type checkpoint `426abca58bb806f0fead1abbd6ddd89ac82fb889` through its public CLI, with an isolated temporary home and a fake native backend. The same public CLI path supports separately authorized, opt-in real model integration:
 
 ```sh
 CODEX_SSH_PROOF_ROOT=/absolute/path/to/authorized-ssh-proof \

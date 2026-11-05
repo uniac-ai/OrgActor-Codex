@@ -134,7 +134,7 @@ export class NativeProtocol extends EventEmitter {
     });
     this.connected = true;
     await this.request("initialize", {
-      clientInfo: { name: "agentorg-codex", title: "OrgActor-Codex", version: "0.0.1" },
+      clientInfo: { name: "agentorg-codex", title: "OrgActor-Codex", version: "0.0.2" },
       capabilities: { experimentalApi: true },
     });
     this.ws.send(JSON.stringify({ method: "initialized", params: {} }));
