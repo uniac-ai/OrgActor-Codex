@@ -90,7 +90,7 @@ test("the guide's API refuses an adapter-connected folder and creates the chosen
 
 test("attaching waits for the guide's folder step, and Detach forgets the Actor", async (t) => {
   const { server, call } = await guided(t);
-  const attach = { actorId: "act", config: { approvalAuthority: "desktop" } };
+  const attach = { actorId: "act", config: {} };
   // Without Codex on this Mac as the backend, attaching keeps its existing checks.
   assert.equal((await call("POST", "/actors", attach)).body.error.code, "PROVISIONING_FAILED");
   await call("PUT", "/setup/guide/codex");
@@ -105,7 +105,7 @@ test("attaching waits for the guide's folder step, and Detach forgets the Actor"
     threadId: "",
     bridgeToken: "private",
     enabled: false,
-    config: { approvalAuthority: "desktop" },
+    config: {},
     submissions: [],
   };
   server.store.data.journal["http://hub|codex|act"] = { fingerprint: "f", state: "failed" };

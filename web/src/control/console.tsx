@@ -240,9 +240,6 @@ export function ConsoleControl() {
             });
           })
         }
-        onAuthority={(id, approvalAuthority) =>
-          void perform(() => client.actor(id, { approvalAuthority }))
-        }
         onTerminals={() =>
           void perform(async () => {
             if (actor) setTerminals((await client.terminals(actor.actorId)).terminals);

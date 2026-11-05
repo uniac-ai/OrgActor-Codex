@@ -168,7 +168,6 @@ export class CodexProvider {
         actorId: params.actorId,
         credential: params.credential ?? null,
         model: params.config.model ?? null,
-        approvalAuthority: params.config.approvalAuthority,
         workspaceRoot: settings.workspaceRoot,
         hubUrl: hub.url,
         executionBinding: hash(JSON.stringify(settings)),

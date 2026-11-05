@@ -12,7 +12,6 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import { WebSocketServer } from "ws";
 import { startPublicHub } from "../scripts/hub.js";
 import { startServer } from "../src/server/index.js";
-import { readAsk } from "./native-form-fixture.js";
 
 async function until(read: () => boolean) {
   for (let i = 0; i < 500; i++) {
@@ -279,34 +278,6 @@ for (const delayed of ["item", "turn-and-item"])
       }),
     );
     assert.equal(runtime.bridge.requests, 1);
-    const outsiderCreated = await root.call("actor_create", {
-      name: "outsider",
-      purpose: "Owned role fixture",
-    });
-    assert.ok(outsiderCreated.state === "done");
-    const outsiderValue = BUILTINS.actor_create.response.parse(outsiderCreated.value);
-    const outsider = await connectClient({
-      url: hub.url,
-      actorId: outsiderValue.actor.id,
-      credential: outsiderValue.credential,
-    });
-    t.after(() => outsider.close());
-
-    const configured = await fetch(`${runtime.url}/api/actors/${value.actor.id}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ approvalAuthority: "hub" }),
-    });
-    assert.equal(configured.status, 200);
-    const formReads: string[] = [];
-    assert.ok(actor.hub);
-    const call = actor.hub.call.bind(actor.hub);
-    actor.hub.call = async (name, args, timeout) => {
-      if (name === "work_get" && args.ticketID !== undefined)
-        assert.fail("A known ask is read by its askID, not recovered through its Work");
-      if (name === "work_get") formReads.push(String(args.askID));
-      return call(name, args, timeout);
-    };
     const socket = [...native.clients][0];
     socket.send(
       JSON.stringify({
@@ -336,39 +307,11 @@ for (const delayed of ["item", "turn-and-item"])
         },
       }),
     );
-    await until(() => Object.values(actor.bootstrap.approvals ?? {}).some((b) => !!b.formId));
-    const binding = Object.values(actor.bootstrap.approvals ?? {})[0];
-    assert.ok(binding.formId);
-    const nativeForm = await readAsk(outsider, binding.formId);
-    assert.equal(nativeForm.workID, actor.bootstrap.threadWork?.ticketId);
-    assert.equal(nativeForm.requesterID, actor.bootstrap.actorId);
-    assert.equal(nativeForm.approval, true);
-    assert.equal(nativeForm.title, "Proceed?");
-    assert.deepEqual(nativeForm.fields[0].options, [{ value: "yes", detail: "Proceed" }]);
-    assert.equal(nativeForm.fields.length, 1);
-    assert.ok(
-      nativeForm.fields.every(
-        (field) => !field.label.includes("native-choice-id") && !field.label.includes("JSON"),
-      ),
-    );
-    const answers = { [nativeForm.fields[0].name]: "yes" };
-    assert.equal(
-      (await outsider.call("work_answer", { askID: nativeForm.formID, answers })).state,
-      "refused",
-    );
-    const closed = await root.call("work_update", {
-      close: { askID: nativeForm.formID, status: "resolved", resolution: "approve" },
-    });
-    assert.ok(closed.state === "refused");
-    assert.equal(closed.code, "forbidden", "only the asker closes its ask");
-    assert.equal(
-      (await root.call("work_answer", { askID: nativeForm.formID, answers })).state,
-      "done",
-    );
+    // Codex asks nothing under the never policy; a question it still sends is declined at once.
     await until(() => state.answers.length === 1);
-    assert.deepEqual(state.answers, [{ answers: { "native-choice-id": { answers: ["yes"] } } }]);
-    assert.ok(formReads.length > 0 && formReads.every((id) => id === nativeForm.formID));
-    assert.ok(binding.answerAttempt);
-    assert.equal((await readAsk(root, nativeForm.formID)).status, "resolved");
+    assert.deepEqual(state.answers, [{ answers: { "native-choice-id": { answers: [] } } }]);
+    const asks = await root.call("work_list", { status: ["open", "active"] });
+    assert.ok(asks.state === "done");
+    assert.deepEqual(BUILTINS.work_list.response.parse(asks.value).items, []);
     assert.equal(actor.bootstrap.submissions.length, 1);
   });

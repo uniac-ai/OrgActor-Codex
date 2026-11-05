@@ -1,10 +1,6 @@
 import { z } from "zod";
 
-export const Authority = z.enum(["desktop", "hub"]);
-export const ExecutionConfig = z.strictObject({
-  model: z.string().min(1).optional(),
-  approvalAuthority: Authority.default("desktop"),
-});
+export const ExecutionConfig = z.strictObject({ model: z.string().min(1).optional() });
 /** The Codex app server: a local socket, or a loopback or TLS WebSocket. */
 export const Backend = z.strictObject({
   kind: z.literal("app-server"),
@@ -46,17 +42,6 @@ export const Attach = z.strictObject({
   credential: z.string().min(1).optional(),
   config: ExecutionConfig,
 });
-export const RequestAnswer = z.discriminatedUnion("kind", [
-  z.strictObject({
-    kind: z.literal("approval"),
-    decision: z.enum(["accept", "decline", "cancel"]),
-  }),
-  z.strictObject({
-    kind: z.literal("input"),
-    answers: z.record(z.string(), z.object({ answers: z.array(z.string()) })),
-  }),
-]);
-export type RequestAnswer = z.infer<typeof RequestAnswer>;
 export interface ActorSnapshot {
   actorId: string;
   enabled: boolean;
@@ -67,8 +52,6 @@ export interface ActorSnapshot {
   threadId: string;
   turnId: string | null;
   queued: number;
-  approvalAuthority: "desktop" | "hub";
-  requests: { id: string; method: string; turnId: string | null; summary: string }[];
   lastError?: string;
   output: string;
 }

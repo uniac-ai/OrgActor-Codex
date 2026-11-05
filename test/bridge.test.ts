@@ -21,7 +21,7 @@ test("native HTTP MCP receives schema-valid Actor creation without structured/te
     actorId: "actor",
     hubUrl: "http://hub",
     credential: "HUB_CREDENTIAL_SENTINEL",
-    config: { approvalAuthority: "desktop" },
+    config: {},
     threadId: "",
     bridgeToken: "BRIDGE_CAPABILITY_SENTINEL",
     enabled: true,
@@ -217,7 +217,7 @@ test("cancelled HTTP Tool request cannot dispatch when its native observation ar
   const bootstrap = {
     actorId: "actor",
     hubUrl: "http://unused.invalid",
-    config: { approvalAuthority: "desktop" as const },
+    config: {},
     threadId: "thread",
     bridgeToken: "OWNED_CANCEL_CAPABILITY",
     enabled: true,
@@ -404,7 +404,7 @@ test("multibyte unauthorized Bearer input returns 401 and the assembled server r
   module.store.data.actors.actor = {
     actorId: "actor",
     hubUrl: "http://hub",
-    config: { approvalAuthority: "desktop" },
+    config: {},
     threadId: "thread",
     bridgeToken: "a".repeat(43),
     enabled: true,
@@ -433,7 +433,7 @@ test("the native session is offered every Hub interface and the report guidance"
   const bootstrap = {
     actorId: "actor",
     hubUrl: "http://unused.invalid",
-    config: { approvalAuthority: "desktop" as const },
+    config: {},
     threadId: "thread",
     bridgeToken: "OWNED_CATALOG_CAPABILITY",
     enabled: true,

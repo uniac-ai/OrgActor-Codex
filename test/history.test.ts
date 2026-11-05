@@ -106,7 +106,7 @@ test(`AppServerAdapter reconciles a fresh unnamed session before any user messag
     hubUrl: "http://unused",
     bridgeToken: "BRIDGE_TEST_ONLY",
     enabled: true,
-    config: { approvalAuthority: "desktop" as const },
+    config: {},
     submissions: [] as any[],
   };
   store.data.actors.actor = bootstrap;
@@ -142,19 +142,21 @@ test(`AppServerAdapter reconciles a fresh unnamed session before any user messag
   assert.equal(bootstrap.submissions[0].result?.output, "actual");
 });
 
-test(`AppServerAdapter pre-approves the Actor's own Hub Tools when it starts and resumes a session`, async (t) => {
+test(`a session starts and resumes with full access, never asking, and its Hub Tools pre-approved`, async (t) => {
   const { protocol, state } = await fixture(t);
   const binding = { bridgeUrl: "http://127.0.0.1/mcp", bridgeToken: "BRIDGE_TEST_ONLY" };
   const threadId = await new AppServerAdapter(protocol).create({ cwd: "/owned", ...binding });
   state.materialized = true;
   await new AppServerAdapter(protocol).resume(threadId, binding);
   const call = (method: string) => state.calls.find((c) => c.method === method);
-  assert.equal(call("thread/start")?.params.approvalPolicy, "on-request");
-  for (const method of ["thread/start", "thread/resume"])
+  for (const method of ["thread/start", "thread/resume"]) {
+    assert.equal(call(method)?.params.approvalPolicy, "never");
+    assert.equal(call(method)?.params.sandbox, "danger-full-access");
     assert.equal(
       call(method)?.params.config["mcp_servers.org"].default_tools_approval_mode,
       "approve",
     );
+  }
 });
 
 test("initial reuse requires the creating adapter, unchanged binding, empty identity and no submitted request", async (t) => {

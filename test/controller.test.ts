@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { ActorController } from "../src/actors/controller.js";
-import { responseFor } from "../src/actors/requests.js";
+import { declined } from "../src/actors/requests.js";
 import { AppServerAdapter } from "../src/codex/index.js";
 import { Fault } from "../src/management/schema.js";
 import { type Bootstrap, RuntimeStore } from "../src/runtime/index.js";
@@ -26,7 +26,7 @@ function fixture(t: any) {
     hubUrl: "http://localhost",
     threadId: "owned",
     bridgeToken: "CAPABILITY_SENTINEL",
-    config: { approvalAuthority: "desktop" },
+    config: {},
     enabled: true,
     submissions: [],
   };
@@ -489,41 +489,25 @@ test("ambiguous steering completes only after its native client ID is observed, 
   assert.equal((await recovered.steer("uncertain", "original", "second")).status, "accepted");
   assert.equal(nativeSteers, 1);
 });
-test("native response union grants requested scope, validates question IDs and declines forms", () => {
+test("every native request kind is declined, granting nothing, and an unknown kind is refused", () => {
+  assert.deepEqual(declined("item/commandExecution/requestApproval", { command: "rm -rf /" }), {
+    decision: "decline",
+  });
+  assert.deepEqual(declined("item/fileChange/requestApproval", {}), { decision: "decline" });
   assert.deepEqual(
-    responseFor(
-      "item/permissions/requestApproval",
-      {
-        permissions: {
-          network: { enabled: true },
-          fileSystem: { read: ["/owned"] },
-          extra: "never-granted",
-        },
-      },
-      "accept",
-      null,
-    ),
-    {
-      permissions: { network: { enabled: true }, fileSystem: { read: ["/owned"] } },
-      scope: "turn",
-    },
+    declined("item/permissions/requestApproval", { permissions: { network: { enabled: true } } }),
+    { permissions: {}, scope: "turn" },
   );
   assert.deepEqual(
-    responseFor("item/tool/requestUserInput", { questions: [{ id: "a" }] }, "accept", {
-      answers: { a: { answers: ["yes"] } },
-    }),
-    { answers: { a: { answers: ["yes"] } } },
+    declined("item/tool/requestUserInput", { questions: [{ id: "a" }, { id: "b" }] }),
+    { answers: { a: { answers: [] }, b: { answers: [] } } },
   );
-  assert.throws(() =>
-    responseFor("item/tool/requestUserInput", { questions: [{ id: "a" }] }, "accept", {
-      answers: { foreign: { answers: ["yes"] } },
-    }),
-  );
-  assert.deepEqual(responseFor("mcpServer/elicitation/request", {}, "decline", null), {
+  assert.deepEqual(declined("mcpServer/elicitation/request", {}), {
     action: "decline",
     content: null,
     _meta: null,
   });
+  assert.equal(declined("item/unknown/request", {}), undefined);
 });
 
 test("no controller observation does not report an idle native executor", (t) => {
