@@ -402,14 +402,14 @@ function ChooseFolder(p: GuideFeature) {
         <span>Folder</span>
         <Input
           aria-label="Folder"
-          value={p.folder || p.guide.folder.suggested}
+          value={p.folder ?? p.guide.folder.suggested}
           onChange={(e) => p.onFolder(e.target.value)}
         />
       </div>
       <Actions>
         <Button
           disabled={p.busy}
-          onClick={() => p.onChooseFolder(p.folder || p.guide.folder.suggested)}
+          onClick={() => p.onChooseFolder(p.folder ?? p.guide.folder.suggested)}
         >
           Use this folder
         </Button>

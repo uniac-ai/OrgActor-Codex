@@ -121,6 +121,8 @@ test("the guided setup walks a fresh Mac to Ready, writing only what the person 
   writeFileSync(join(trial, ".codex", "config.toml"), '[mcp_servers.org]\ncommand = "x"\n');
   const suggested = join(home, "agentorg-codex");
   await expect(page.getByLabel("Folder")).toHaveValue(suggested);
+  await page.getByLabel("Folder").fill("");
+  await expect(page.getByLabel("Folder")).toHaveValue("");
   await page.getByLabel("Folder").fill(trial);
   await page.getByRole("button", { name: "Use this folder" }).click();
   await expect(step(page, "folder")).toContainText("AgentOrg's Codex adapter is connected there");

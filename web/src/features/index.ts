@@ -47,7 +47,8 @@ export interface GuideFeature {
   guide: Guide;
   busy: boolean;
   checking: boolean;
-  folder: string;
+  /** The folder being typed; null shows the suggested one. */
+  folder: string | null;
   /** A folder just refused because AgentOrg's Codex adapter is connected there. */
   refusedFolder: string | null;
   onFolder(value: string): void;

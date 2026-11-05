@@ -33,7 +33,7 @@ export function ConsoleControl() {
   const [guide, setGuide] = useState<Guide | null>(null);
   const [checking, setChecking] = useState(false);
   const [consent, setConsent] = useState<Consent | null>(null);
-  const [folder, setFolder] = useState("");
+  const [folder, setFolder] = useState<string | null>(null);
   const [refusedFolder, setRefusedFolder] = useState<string | null>(null);
   const refresh = useCallback(async () => {
     const [next, steps] = await Promise.all([client.state(), client.guide()]);
@@ -145,7 +145,7 @@ export function ConsoleControl() {
                 try {
                   await client.chooseFolder(path);
                   setRefusedFolder(null);
-                  setFolder("");
+                  setFolder(null);
                 } catch (e) {
                   if ((e as { code?: string }).code !== "FOLDER_HAS_ADAPTER") throw e;
                   setRefusedFolder(path);
